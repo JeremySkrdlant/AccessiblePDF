@@ -60,14 +60,24 @@ export const useTagStore = create<TagStore>((set, get) => ({
   addRegion: (region) => {
     const doc = get().document
     if (!doc) return
+    const isFigure = region.tag === 'Figure' || region.type === 'image'
     set({
       document: {
         ...doc,
-        pages: doc.pages.map((page) =>
-          page.pageNumber === region.pageNumber
-            ? { ...page, regions: [...page.regions, region] }
-            : page
-        )
+        pages: doc.pages.map((page) => {
+          if (page.pageNumber !== region.pageNumber) return page
+          let newRegions = page.regions
+          if (isFigure) {
+            newRegions = newRegions.filter(r => {
+              const cx = r.bbox.x + r.bbox.width / 2
+              const cy = r.bbox.y + r.bbox.height / 2
+              const isInside = cx >= region.bbox.x && cx <= region.bbox.x + region.bbox.width &&
+                               cy >= region.bbox.y && cy <= region.bbox.y + region.bbox.height
+              return !isInside
+            })
+          }
+          return { ...page, regions: [...newRegions, region] }
+        })
       },
       selectedRegionIds: [region.id],
       toolMode: 'select'
@@ -80,12 +90,33 @@ export const useTagStore = create<TagStore>((set, get) => ({
     set({
       document: {
         ...doc,
-        pages: doc.pages.map((page) => ({
-          ...page,
-          regions: page.regions.map((r) =>
-            r.id === regionId ? { ...r, ...updates } : r
-          )
-        }))
+        pages: doc.pages.map((page) => {
+          const hasRegion = page.regions.some(r => r.id === regionId)
+          if (!hasRegion) return page
+
+          const targetRegion = page.regions.find(r => r.id === regionId)!
+          const finalRegion = { ...targetRegion, ...updates }
+          const isFigure = finalRegion.tag === 'Figure' || finalRegion.type === 'image'
+
+          let filteredRegions = page.regions
+          if (isFigure) {
+            filteredRegions = filteredRegions.filter(r => {
+              if (r.id === regionId) return true // Keep the figure itself
+              const cx = r.bbox.x + r.bbox.width / 2
+              const cy = r.bbox.y + r.bbox.height / 2
+              const isInside = cx >= finalRegion.bbox.x && cx <= finalRegion.bbox.x + finalRegion.bbox.width &&
+                               cy >= finalRegion.bbox.y && cy <= finalRegion.bbox.y + finalRegion.bbox.height
+              return !isInside
+            })
+          }
+
+          return {
+            ...page,
+            regions: filteredRegions.map((r) =>
+              r.id === regionId ? finalRegion : r
+            )
+          }
+        })
       }
     })
   },

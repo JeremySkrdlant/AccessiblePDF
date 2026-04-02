@@ -32,7 +32,7 @@ function rectsIntersect(r: PDFRegion, drag: DragRect, cw: number, ch: number): b
 export function RegionOverlay({
   regions, canvasWidth, canvasHeight, selectedRegionIds, pageNum
 }: RegionOverlayProps) {
-  const { selectRegion, setSelectedRegionIds, updateRegion, addRegion, toolMode, setToolMode } = useTagStore()
+  const { selectRegion, setSelectedRegionIds, updateRegion, addRegion, toolMode, setToolMode, mergeSelectedRegions } = useTagStore()
   const overlayRef = useRef<HTMLDivElement>(null)
   const dragStartRef = useRef<{ x: number; y: number } | null>(null)
   const [dragRect, setDragRect] = useState<DragRect | null>(null)
@@ -46,13 +46,17 @@ export function RegionOverlay({
         selectRegion(null)
         return
       }
+      if (e.key.toLowerCase() === 'm') {
+        mergeSelectedRegions()
+        return
+      }
       const role = KEY_TO_TAG[e.key.toLowerCase()]
       if (!role) return
       for (const id of selectedRegionIds) updateRegion(id, { tag: role })
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [selectedRegionIds, selectRegion, updateRegion])
+  }, [selectedRegionIds, selectRegion, updateRegion, mergeSelectedRegions, setToolMode, toolMode])
 
   function getLocalCoords(e: React.MouseEvent) {
     const rect = overlayRef.current!.getBoundingClientRect()

@@ -65,6 +65,45 @@ function buildStructNodes(regions: PDFRegion[]): StructNode[] {
 }
 
 // ---------------------------------------------------------------------------
+// PDF/UA-1 XMP metadata
+// Required by PDF/UA-1 (ISO 14289-1 §6.7.11) — checkers look for pdfuaid:part
+// ---------------------------------------------------------------------------
+function buildXmpMetadata(title: string, language: string): string {
+  const esc = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  const now = new Date().toISOString() // e.g. 2026-04-02T14:30:00.000Z
+  return `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about=""
+        xmlns:dc="http://purl.org/dc/elements/1.1/"
+        xmlns:pdf="http://ns.adobe.com/pdf/1.3/"
+        xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+        xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/">
+      <dc:title>
+        <rdf:Alt>
+          <rdf:li xml:lang="x-default">${esc(title)}</rdf:li>
+        </rdf:Alt>
+      </dc:title>
+      <dc:language>
+        <rdf:Bag>
+          <rdf:li>${esc(language)}</rdf:li>
+        </rdf:Bag>
+      </dc:language>
+      <pdf:Producer>PDF Accessibility Tagger</pdf:Producer>
+      <pdf:PDFVersion>1.7</pdf:PDFVersion>
+      <xmp:CreateDate>${now}</xmp:CreateDate>
+      <xmp:ModifyDate>${now}</xmp:ModifyDate>
+      <xmp:MetadataDate>${now}</xmp:MetadataDate>
+      <xmp:CreatorTool>PDF Accessibility Tagger</xmp:CreatorTool>
+      <pdfuaid:part>1</pdfuaid:part>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>`
+}
+
+// ---------------------------------------------------------------------------
 // Raw PDF operator helpers (pdf-lib doesn't expose all operators we need)
 // ---------------------------------------------------------------------------
 function op(name: PDFOperatorNames, ...args: Array<string | number>): PDFOperator {
@@ -114,8 +153,10 @@ export async function exportTaggedPDF(
   // Step 1: Load and configure document metadata
   // ------------------------------------------------------------------
   let pdfDoc: PDFDocument
+  let srcDoc: PDFDocument
   try {
     pdfDoc = await PDFDocument.load(rawBytes, { updateMetadata: false })
+    srcDoc = await PDFDocument.load(rawBytes)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes('password') || msg.includes('encrypt')) {
@@ -134,10 +175,17 @@ export async function exportTaggedPDF(
   // Set document-level accessibility metadata
   const title = docTitle.trim() || appDoc.fileName.replace(/\.pdf$/i, '') || 'Accessible Document'
   pdfDoc.setTitle(title, { showInWindowTitleBar: true })
-  pdfDoc.setLanguage(docLanguage || 'en-US')
+  const language = docLanguage || 'en-US'
+  pdfDoc.setLanguage(language)
 
   // MarkInfo: tells viewers this PDF has structure tags
   catalog.set(PDFName.of('MarkInfo'), context.obj({ Marked: true }))
+
+  // PDF/UA-1 XMP metadata — required for pdfuaid:part identifier
+  const xmpBytes = new TextEncoder().encode(buildXmpMetadata(title, language))
+  const xmpStream = context.stream(xmpBytes, { Type: 'Metadata', Subtype: 'XML' })
+  const xmpRef = context.register(xmpStream)
+  catalog.set(PDFName.of('Metadata'), xmpRef)
 
   // ------------------------------------------------------------------
   // Step 2: Embed the invisible text font
@@ -169,17 +217,20 @@ export async function exportTaggedPDF(
   const structNodes = buildStructNodes(allTaggedRegions)
 
   // ------------------------------------------------------------------
-  // Step 5: Assign MCIDs to all non-Artifact leaf regions
+  // Step 5: Assign MCIDs per page to all non-Artifact leaf regions
   // ------------------------------------------------------------------
   const mcidMap = new Map<string, number>()  // regionId → MCID
-  let nextMcid = 0
+  const pageMcidCounters = new Map<number, number>()
 
   function assignMcids(nodes: StructNode[]) {
     for (const node of nodes) {
       if (node.children) {
         assignMcids(node.children)
       } else if (node.region && node.tag !== 'Artifact') {
-        mcidMap.set(node.region.id, nextMcid++)
+        const pageNum = node.region.pageNumber
+        const nextMcid = pageMcidCounters.get(pageNum) || 0
+        mcidMap.set(node.region.id, nextMcid)
+        pageMcidCounters.set(pageNum, nextMcid + 1)
       }
     }
   }
@@ -189,92 +240,116 @@ export async function exportTaggedPDF(
   // Step 6: Build per-page invisible text content streams
   // ------------------------------------------------------------------
   const pdfPages = pdfDoc.getPages()
+  const embeddedPages = await pdfDoc.embedPages(srcDoc.getPages())
 
   for (let pageIdx = 0; pageIdx < pdfPages.length; pageIdx++) {
     const page = pdfPages[pageIdx]
     const pageNum = pageIdx + 1
+    page.node.set(PDFName.of('StructParents'), PDFNumber.of(pageIdx))
+    page.node.set(PDFName.of('Tabs'), PDFName.of('S'))
     const { width: pageW, height: pageH } = page.getSize()
 
+    // Clear existing contents so we can completely rebuild them cleanly in one stream
+    page.node.set(PDFName.of('Contents'), context.obj([]))
+
     const regionsOnPage = allTaggedRegions.filter((r) => r.pageNumber === pageNum)
-    if (regionsOnPage.length === 0) continue
 
-    // Add font resource to this page
-    const resources = page.node.Resources()
-    if (resources) {
-      let fontDict = resources.lookupMaybe(PDFName.Font, PDFDict)
-      if (!fontDict) {
-        fontDict = context.obj({}) as PDFDict
-        resources.set(PDFName.Font, fontDict)
-      }
-      fontDict.set(PDFName.of(FONT_KEY), font.ref)
+    const resources = page.node.Resources() || context.obj({}) as PDFDict
+    if (!page.node.Resources()) {
+      page.node.set(PDFName.of('Resources'), resources)
+    }
 
-      // Add Properties dict for named MCID references
-      let propsDict = resources.lookupMaybe(PDFName.of('Properties'), PDFDict)
-      if (!propsDict) {
-        propsDict = context.obj({}) as PDFDict
-        resources.set(PDFName.of('Properties'), propsDict)
-      }
+    // Embed the original page as a Form XObject and insert it into /XObject resources
+    let xobjDict = resources.lookupMaybe(PDFName.of('XObject'), PDFDict)
+    if (!xobjDict) {
+      xobjDict = context.obj({}) as PDFDict
+      resources.set(PDFName.of('XObject'), xobjDict)
+    }
+    const embedName = `OriginalPg${pageNum}`
+    xobjDict.set(PDFName.of(embedName), embeddedPages[pageIdx].ref)
 
-      // Register a property entry for each MCID on this page
-      for (const region of regionsOnPage) {
-        if (region.tag === 'Artifact') continue
-        const mcid = mcidMap.get(region.id)
-        if (mcid === undefined) continue
-        const propKey = `MC${mcid}`
-        propsDict.set(PDFName.of(propKey), context.obj({ MCID: mcid }))
-      }
+    // Add invisible text font to resources
+    let fontDict = resources.lookupMaybe(PDFName.Font, PDFDict)
+    if (!fontDict) {
+      fontDict = context.obj({}) as PDFDict
+      resources.set(PDFName.Font, fontDict)
+    }
+    fontDict.set(PDFName.of(FONT_KEY), font.ref)
+
+    // Add Properties dict for named MCID references
+    let propsDict = resources.lookupMaybe(PDFName.of('Properties'), PDFDict)
+    if (!propsDict) {
+      propsDict = context.obj({}) as PDFDict
+      resources.set(PDFName.of('Properties'), propsDict)
+    }
+
+    // Register a property entry for each MCID on this page
+    for (const region of regionsOnPage) {
+      if (region.tag === 'Artifact') continue
+      const mcid = mcidMap.get(region.id)
+      if (mcid === undefined) continue
+      const propKey = `MC${mcid}`
+      propsDict.set(PDFName.of(propKey), context.obj({ MCID: mcid }))
     }
 
     // Build the content stream operators
     const operators: PDFOperator[] = []
+
+    // 1. Draw the Original encapsulated visual page, wrapped safely in Artifact!
+    operators.push(beginMarkedContentArtifact())
     operators.push(pushGraphicsState())
-    operators.push(beginText())
-    operators.push(setTextRenderingMode(3)) // invisible — visual rendering mode 3
+    // 1 0 0 1 0 0 cm (identity matrix)
+    operators.push(op(PDFOperatorNames.DrawObject, embedName))
+    operators.push(popGraphicsState())
+    operators.push(endMarkedContent())
 
-    for (const region of regionsOnPage) {
-      if (region.tag === 'Artifact') {
-        // Artifact: mark as /Artifact, no MCID
-        operators.push(beginMarkedContentArtifact())
+    // 2. Draw our invisible screen-reader tagging text!
+    if (regionsOnPage.length > 0) {
+      operators.push(pushGraphicsState())
+      operators.push(beginText())
+      operators.push(setTextRenderingMode(3)) // invalid visual rendering mode 3
+
+      for (const region of regionsOnPage) {
+        if (region.tag === 'Artifact') {
+          operators.push(beginMarkedContentArtifact())
+          operators.push(endMarkedContent())
+          continue
+        }
+
+        const mcid = mcidMap.get(region.id)
+        if (mcid === undefined) continue
+
+        const propName = `MC${mcid}`
+        const structType = toStructType(region.tag as NonNullable<TagRole>)
+
+        operators.push(beginMarkedContentProps(structType, propName))
+
+        const pdfX = region.bbox.x * pageW
+        const pdfY = pageH - (region.bbox.y + region.bbox.height) * pageH
+        const fontSize = Math.max(Math.round(region.bbox.height * pageH), 6)
+
+        operators.push(setFont(FONT_KEY, fontSize))
+        operators.push(setTextMatrix(1, 0, 0, 1, pdfX, pdfY))
+
+        const textContent =
+          region.type === 'text'
+            ? (region.ocrText ?? '')
+            : region.type === 'image' && region.altText
+              ? region.altText
+              : ''
+
+        if (textContent) {
+          operators.push(showText(font.encodeText(textContent)))
+        }
+
         operators.push(endMarkedContent())
-        continue
       }
 
-      const mcid = mcidMap.get(region.id)
-      if (mcid === undefined) continue
-
-      const propName = `MC${mcid}`
-      const structType = toStructType(region.tag as NonNullable<TagRole>)
-
-      operators.push(beginMarkedContentProps(structType, propName))
-
-      // Position text at the region bbox
-      // bbox is screen-normalized (top-left origin); convert to PDF space (bottom-left origin)
-      const pdfX = region.bbox.x * pageW
-      const pdfY = pageH - (region.bbox.y + region.bbox.height) * pageH
-      // Font size scales with region height, min 6pt
-      const fontSize = Math.max(Math.round(region.bbox.height * pageH), 6)
-
-      operators.push(setFont(FONT_KEY, fontSize))
-      operators.push(setTextMatrix(1, 0, 0, 1, pdfX, pdfY))
-
-      const textContent =
-        region.type === 'text'
-          ? (region.ocrText ?? '')
-          : region.type === 'image' && region.altText
-            ? region.altText
-            : ''
-
-      if (textContent) {
-        operators.push(showText(font.encodeText(textContent)))
-      }
-
-      operators.push(endMarkedContent())
+      operators.push(endText())
+      operators.push(popGraphicsState())
     }
 
-    operators.push(endText())
-    operators.push(popGraphicsState())
-
-    // Create a new content stream and append it to the page
+    // Create a NEW content stream and append it to the page
     const streamBytes = operators.map((o) => o.toString()).join('\n')
     const stream = context.flateStream(new TextEncoder().encode(streamBytes))
     const streamRef = context.register(stream)
@@ -282,15 +357,23 @@ export async function exportTaggedPDF(
   }
 
   // ------------------------------------------------------------------
-  // Step 7: Build StructElement indirect refs
+  // Step 7: Build StructElement indirect refs and populate ParentTree map
   // ------------------------------------------------------------------
   const structTreeRootRef = context.nextRef()
   const documentElemRef = context.nextRef()
 
+  const pageElemsMap = new Map<number, (PDFRef | null)[]>()
+
+  function registerElemForPage(pageNum: number, mcid: number, ref: PDFRef) {
+    if (!pageElemsMap.has(pageNum)) {
+      pageElemsMap.set(pageNum, [])
+    }
+    const arr = pageElemsMap.get(pageNum)!
+    arr[mcid] = ref
+  }
+
   interface BuiltElem {
     ref: PDFRef
-    mcid?: number
-    pageRef?: PDFRef
   }
 
   function buildElemRefs(nodes: StructNode[]): BuiltElem[] {
@@ -315,6 +398,11 @@ export async function exportTaggedPDF(
         context.assign(listRef, listDict)
         results.push({ ref: listRef })
       } else if (node.region) {
+        if (node.tag === 'Artifact') {
+          // Artifacts are not in the structure tree — skip allocating a ref
+          continue
+        }
+
         const region = node.region
         const elemRef = context.nextRef()
         const pageIdx = region.pageNumber - 1
@@ -327,23 +415,48 @@ export async function exportTaggedPDF(
           Pg: pageRef
         }) as PDFDict
 
-        if (node.tag === 'Artifact') {
-          // Artifacts are not in the structure tree — skip
-          continue
+        const isListItem = node.tag === 'ListItem'
+        const isTable = node.tag === 'Table'
+        let targetRef = elemRef
+
+        if (isListItem) {
+          const lbodyRef = context.nextRef()
+          context.assign(lbodyRef, context.obj({ Type: 'StructElem', S: 'LBody', P: elemRef, Pg: pageRef }))
+          elemDict.set(PDFName.of('K'), lbodyRef)
+          targetRef = lbodyRef
+        } else if (isTable) {
+          const trRef = context.nextRef()
+          const tdRef = context.nextRef()
+          context.assign(trRef, context.obj({ Type: 'StructElem', S: 'TR', P: elemRef, Pg: pageRef }))
+          context.assign(tdRef, context.obj({ Type: 'StructElem', S: 'TD', P: trRef, Pg: pageRef }))
+          elemDict.set(PDFName.of('K'), trRef)
+          ;(context.lookup(trRef) as PDFDict).set(PDFName.of('K'), tdRef)
+          targetRef = tdRef
         }
 
         const mcid = mcidMap.get(region.id)
         if (mcid !== undefined) {
-          elemDict.set(PDFName.of('K'), PDFNumber.of(mcid))
+          if (targetRef === elemRef) {
+             elemDict.set(PDFName.of('K'), PDFNumber.of(mcid))
+          } else {
+             const targetDict = context.lookup(targetRef) as PDFDict
+             targetDict.set(PDFName.of('K'), PDFNumber.of(mcid))
+          }
+          registerElemForPage(region.pageNumber, mcid, targetRef)
         }
 
-        // Alt text goes directly on the Figure StructElement (PDF spec §14.9.3)
-        if (node.tag === 'Figure' && region.altText) {
-          elemDict.set(PDFName.of('Alt'), PDFString.of(region.altText))
+        if (node.tag === 'Figure') {
+          if (region.altText) {
+            elemDict.set(PDFName.of('Alt'), PDFString.of(region.altText))
+          }
+          const { width: pageW, height: pageH } = pdfPages[pageIdx].getSize()
+          const pdfX = region.bbox.x * pageW
+          const pdfY = pageH - (region.bbox.y + region.bbox.height) * pageH
+          elemDict.set(PDFName.of('BBox'), context.obj([pdfX, pdfY, pdfX + region.bbox.width * pageW, pdfY + region.bbox.height * pageH]))
         }
 
         context.assign(elemRef, elemDict)
-        results.push({ ref: elemRef, mcid, pageRef })
+        results.push({ ref: elemRef })
       }
     }
     return results
@@ -359,63 +472,31 @@ export async function exportTaggedPDF(
     Type: 'StructElem',
     S: 'Document',
     P: structTreeRootRef,
-    K: kArray
+    K: kArray,
+    T: PDFString.of(title)
   }) as PDFDict
   context.assign(documentElemRef, documentElemDict)
 
   // ------------------------------------------------------------------
-  // Step 9: Build the ParentTree (MCID → StructElement reverse lookup)
-  // ParentTree is a number tree mapping MCID int → StructElement ref.
-  // Screen readers use this to go from a BDC MCID back to the struct element.
+  // Step 9: Build the ParentTree (StructParents → StructElements array)
+  // ParentTree is a number tree mapping a Page's StructParents int to an 
+  // array of StructElement refs sequentially indexed by their MCID.
   // ------------------------------------------------------------------
   const numsArray = context.obj([]) as PDFArray
-
-  // Collect all leaf elements with MCIDs
-  function collectLeafElems(nodes: StructNode[], refs: BuiltElem[]) {
-    // refs are already in order from buildElemRefs
-  }
-  void collectLeafElems // prevent lint warning
-
-  // Re-walk to pair MCID integers with their struct element refs
-  const mcidToElemRef = new Map<number, PDFRef>()
-
-  function collectMcidRefs(nodes: StructNode[], elemRefs: BuiltElem[], idx: { n: number }) {
-    for (const node of nodes) {
-      if (node.children) {
-        // The list container ref holds children; look inside
-        const listBuilt = elemRefs[idx.n++]
-        if (!listBuilt) continue
-        const listDict = context.lookup(listBuilt.ref) as PDFDict
-        const childK = listDict.lookup(PDFName.of('K'))
-        if (childK instanceof PDFArray) {
-          childK.asArray().forEach((childRef) => {
-            if (childRef instanceof PDFRef) {
-              const childDict = context.lookup(childRef) as PDFDict
-              const kVal = childDict.lookup(PDFName.of('K'))
-              if (kVal instanceof PDFNumber) {
-                mcidToElemRef.set(kVal.asNumber(), childRef)
-              }
-            }
-          })
-        }
-      } else if (node.region && node.tag !== 'Artifact') {
-        const built = elemRefs[idx.n++]
-        if (built && built.mcid !== undefined) {
-          mcidToElemRef.set(built.mcid, built.ref)
-        }
+  for (let pageIdx = 0; pageIdx < pdfPages.length; pageIdx++) {
+    const pageNum = pageIdx + 1
+    const elems = pageElemsMap.get(pageNum) || []
+    
+    const pageArray = context.obj([]) as PDFArray
+    for (let i = 0; i < elems.length; i++) {
+      if (elems[i]) {
+        pageArray.push(elems[i]!)
       } else {
-        idx.n++
+        pageArray.push(documentElemRef)
       }
     }
-  }
-  collectMcidRefs(structNodes, builtElems, { n: 0 })
-
-  // Build a sorted Nums array: [0 ref0 1 ref1 ...]
-  const sortedMcids = Array.from(mcidToElemRef.keys()).sort((a, b) => a - b)
-  for (const mcid of sortedMcids) {
-    const ref = mcidToElemRef.get(mcid)!
-    numsArray.push(PDFNumber.of(mcid))
-    numsArray.push(ref)
+    numsArray.push(PDFNumber.of(pageIdx))
+    numsArray.push(context.register(pageArray))
   }
 
   const parentTreeRef = context.nextRef()
@@ -429,7 +510,7 @@ export async function exportTaggedPDF(
     Type: 'StructTreeRoot',
     K: documentElemRef,
     ParentTree: parentTreeRef,
-    ParentTreeNextKey: nextMcid
+    ParentTreeNextKey: pdfPages.length
   }) as PDFDict
   context.assign(structTreeRootRef, structTreeRootDict)
 
