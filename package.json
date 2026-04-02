@@ -1,0 +1,41 @@
+{
+  "name": "pdf-accessibility-tagger",
+  "version": "0.1.0",
+  "description": "Tag PDFs for genuine screen reader accessibility",
+  "main": "out/main/index.js",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win",
+    "typecheck": "tsc --noEmit",
+    "preview": "electron-vite preview"
+  },
+  "build": {
+    "config": "electron-builder.yml"
+  },
+  "dependencies": {
+    "pdfjs-dist": "4.4.168",
+    "tesseract.js": "5.1.1",
+    "pdf-lib": "1.17.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zustand": "4.5.4"
+  },
+  "devDependencies": {
+    "electron": "28.3.3",
+    "electron-vite": "2.3.0",
+    "electron-builder": "24.13.3",
+    "typescript": "5.5.4",
+    "tailwindcss": "3.4.7",
+    "@tailwindcss/typography": "0.5.14",
+    "autoprefixer": "10.4.20",
+    "postcss": "8.4.41",
+    "vite": "5.3.5",
+    "@vitejs/plugin-react": "4.3.1",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "@types/node": "20.14.14"
+  }
+}

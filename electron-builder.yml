@@ -1,0 +1,21 @@
+appId: com.blackboardtools.pdf-accessibility-tagger
+productName: PDF Accessibility Tagger
+directories:
+  output: dist-electron
+files:
+  - out/**/*
+extraResources:
+  - from: node_modules/tesseract.js-core/tesseract-core-simd-lstm.wasm
+    to: tesseract-core-simd-lstm.wasm
+  - from: node_modules/tesseract.js-core/tesseract-core-lstm.wasm
+    to: tesseract-core-lstm.wasm
+mac:
+  target: dmg
+  icon: resources/icons/icon.icns
+  category: public.app-category.productivity
+win:
+  target: nsis
+  icon: resources/icons/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
