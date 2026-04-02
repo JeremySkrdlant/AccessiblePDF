@@ -8,3 +8,12 @@ coverage/
 .vscode/
 *.suo
 *.ntvs*
+
+# electron-vite build output
+out/
+
+# electron-builder packaged output
+dist-electron/
+
+# Vite cache
+.vite/
