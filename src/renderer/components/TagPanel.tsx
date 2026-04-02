@@ -18,8 +18,8 @@ const TEXT_ROLES: { role: TagRole; label: string; key: string }[] = [
   { role: 'Artifact', label: 'Artifact (decorative)', key: 'A' }
 ]
 
-function getSelectedRegion(document: PDFDocumentMeta | null, id: string | null): PDFRegion | null {
-  if (!document || !id) return null
+function findRegion(document: PDFDocumentMeta | null, id: string): PDFRegion | null {
+  if (!document) return null
   for (const page of document.pages) {
     const r = page.regions.find((region) => region.id === id)
     if (r) return r
@@ -28,10 +28,15 @@ function getSelectedRegion(document: PDFDocumentMeta | null, id: string | null):
 }
 
 export function TagPanel() {
-  const { document, selectedRegionId, updateRegion, selectRegion } = useTagStore()
-  const region = getSelectedRegion(document, selectedRegionId)
+  const { document, selectedRegionIds, updateRegion, selectRegion, mergeSelectedRegions } =
+    useTagStore()
 
-  if (!region) {
+  const isMultiSelect = selectedRegionIds.length > 1
+  const singleRegion =
+    selectedRegionIds.length === 1 ? findRegion(document, selectedRegionIds[0]) : null
+
+  // Nothing selected
+  if (selectedRegionIds.length === 0) {
     return (
       <div className="w-72 flex-shrink-0 bg-white border-l border-gray-200 flex flex-col">
         <div className="p-4 border-b border-gray-100">
@@ -39,7 +44,7 @@ export function TagPanel() {
         </div>
         <div className="flex-1 flex items-center justify-center p-6">
           <p className="text-sm text-gray-400 text-center">
-            Click a region on the document to tag it.
+            Click a region to tag it, or drag to select multiple.
           </p>
         </div>
         <div className="p-3 border-t border-gray-100">
@@ -48,12 +53,92 @@ export function TagPanel() {
             <div>1–6 Headings · P Paragraph</div>
             <div>F Figure · C Caption · T Table</div>
             <div>L List · I List Item · A Artifact</div>
-            <div>Esc Deselect</div>
+            <div>Cmd+click to add to selection · Esc Deselect</div>
           </div>
         </div>
       </div>
     )
   }
+
+  // Multiple regions selected — show merge UI
+  if (isMultiSelect) {
+    function applyTagToAll(role: TagRole) {
+      for (const id of selectedRegionIds) {
+        updateRegion(id, { tag: role })
+      }
+    }
+
+    // Check if all selected regions are on the same page (required for merge)
+    const pages = new Set(
+      selectedRegionIds
+        .map((id) => findRegion(document, id)?.pageNumber)
+        .filter((p): p is number => p !== undefined)
+    )
+    const canMerge = pages.size === 1
+
+    return (
+      <div className="w-72 flex-shrink-0 bg-white border-l border-gray-200 flex flex-col overflow-y-auto">
+        <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-gray-700">
+            {selectedRegionIds.length} regions selected
+          </h2>
+          <button
+            onClick={() => selectRegion(null)}
+            className="text-gray-400 hover:text-gray-600 text-lg leading-none"
+            aria-label="Deselect all"
+          >
+            ×
+          </button>
+        </div>
+
+        {/* Merge action */}
+        <div className="p-4 border-b border-gray-100">
+          <button
+            onClick={mergeSelectedRegions}
+            disabled={!canMerge}
+            className={`
+              w-full py-2 px-3 rounded-lg text-sm font-semibold transition-colors
+              ${canMerge
+                ? 'bg-blue-600 text-white hover:bg-blue-700'
+                : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+              }
+            `}
+          >
+            Combine into one region
+          </button>
+          {!canMerge && (
+            <p className="text-xs text-gray-400 mt-1.5">
+              Regions must be on the same page to combine.
+            </p>
+          )}
+        </div>
+
+        {/* Apply tag to all selected */}
+        <div className="p-4 flex-1">
+          <p className="text-xs font-medium text-gray-500 mb-2">Apply tag to all selected</p>
+          <div className="flex flex-col gap-1.5">
+            {TEXT_ROLES.map(({ role, label, key }) => (
+              <button
+                key={role}
+                onClick={() => applyTagToAll(role)}
+                className="flex items-center justify-between px-3 py-2 rounded-md text-sm bg-gray-50 text-gray-700 hover:bg-gray-100 transition-colors text-left"
+              >
+                <span className="flex items-center gap-2">
+                  <TagBadge tag={role} small />
+                  <span>{label}</span>
+                </span>
+                <span className="text-xs text-gray-400">{key}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Single region selected
+  const region = singleRegion
+  if (!region) return null
 
   function setTag(role: TagRole) {
     updateRegion(region!.id, { tag: role })
@@ -72,62 +157,59 @@ export function TagPanel() {
         </button>
       </div>
 
-      {/* OCR preview */}
-      {region.type === 'text' && region.ocrText && (
+      {region.type === 'text' && region.ocrText && region.tag !== 'Figure' && (
         <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
           <p className="text-xs text-gray-500 font-medium mb-1">OCR text</p>
           <p className="text-xs text-gray-700 line-clamp-3 font-mono">{region.ocrText}</p>
         </div>
       )}
 
-      <div className="p-4 flex-1">
-        {region.type === 'image' ? (
+      <div className="p-4 flex-1 flex flex-col gap-4">
+        {/* Alt text editor — shown whenever tag is Figure */}
+        {region.tag === 'Figure' || region.type === 'image' ? (
           <ImageAltEditor region={region} />
-        ) : (
-          <div className="flex flex-col gap-1.5">
-            {TEXT_ROLES.map(({ role, label, key }) => {
-              const isActive = region.tag === role
-              return (
-                <button
-                  key={role}
-                  onClick={() => setTag(isActive ? null : role)}
-                  className={`
-                    flex items-center justify-between px-3 py-2 rounded-md text-sm
-                    transition-colors text-left
-                    ${isActive
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
-                    }
-                  `}
-                >
-                  <span className="flex items-center gap-2">
-                    <TagBadge tag={role} small />
-                    <span>{label}</span>
-                  </span>
-                  <span className={`text-xs ${isActive ? 'text-blue-200' : 'text-gray-400'}`}>
-                    {key}
-                  </span>
-                </button>
-              )
-            })}
+        ) : null}
 
-            {region.tag && (
+        {/* Tag buttons — always shown so the user can re-tag */}
+        <div className="flex flex-col gap-1.5">
+          {TEXT_ROLES.map(({ role, label, key }) => {
+            const isActive = region.tag === role
+            return (
               <button
-                onClick={() => setTag(null)}
-                className="mt-1 text-xs text-gray-400 hover:text-gray-600 text-left"
+                key={role}
+                onClick={() => setTag(isActive ? null : role)}
+                className={`
+                  flex items-center justify-between px-3 py-2 rounded-md text-sm
+                  transition-colors text-left
+                  ${isActive
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+                  }
+                `}
               >
-                Clear tag
+                <span className="flex items-center gap-2">
+                  <TagBadge tag={role} small />
+                  <span>{label}</span>
+                </span>
+                <span className={`text-xs ${isActive ? 'text-blue-200' : 'text-gray-400'}`}>
+                  {key}
+                </span>
               </button>
-            )}
-          </div>
-        )}
+            )
+          })}
+          {region.tag && (
+            <button
+              onClick={() => setTag(null)}
+              className="mt-1 text-xs text-gray-400 hover:text-gray-600 text-left"
+            >
+              Clear tag
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Reading order override */}
       <div className="p-4 border-t border-gray-100">
-        <label className="text-xs font-medium text-gray-500">
-          Reading order (optional)
-        </label>
+        <label className="text-xs font-medium text-gray-500">Reading order (optional)</label>
         <input
           type="number"
           min={0}

@@ -3,7 +3,7 @@ import { useTagStore } from '../hooks/useTagStore'
 import { exportTaggedPDF } from '../lib/pdfExport'
 
 export function ExportButton() {
-  const { document, rawPdfBytes } = useTagStore()
+  const { document, rawPdfBytes, docTitle, docLanguage } = useTagStore()
   const [isExporting, setIsExporting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
@@ -21,7 +21,7 @@ export function ExportButton() {
     setSuccess(false)
 
     try {
-      const bytes = await exportTaggedPDF(rawPdfBytes, document)
+      const bytes = await exportTaggedPDF(rawPdfBytes, document, docTitle, docLanguage)
       const defaultName = document.fileName.replace(/\.pdf$/i, '') + '-accessible.pdf'
       const savedPath = await window.electronAPI.saveFile(defaultName, bytes)
       if (savedPath) setSuccess(true)

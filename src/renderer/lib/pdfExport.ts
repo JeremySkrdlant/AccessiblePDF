@@ -11,6 +11,7 @@ import {
   popGraphicsState,
   PDFOperator,
   PDFOperatorNames,
+  showText,
 } from 'pdf-lib'
 import type { PDFDocumentMeta, PDFRegion, TagRole } from './types'
 
@@ -88,12 +89,6 @@ function setFont(fontKey: string, size: number): PDFOperator {
 function setTextMatrix(a: number, b: number, c: number, d: number, e: number, f: number): PDFOperator {
   return op(PDFOperatorNames.SetTextMatrix, a, b, c, d, e, f)
 }
-function showTextString(encoded: Uint8Array): PDFOperator {
-  // Encode as hex string literal <...>
-  const hex = Array.from(encoded).map((b) => b.toString(16).padStart(2, '0')).join('')
-  return PDFOperator.of(PDFOperatorNames.ShowText, [`<${hex}>`] as never)
-}
-
 // BDC with named properties dict: /StructType /PropName BDC
 function beginMarkedContentProps(structType: string, propName: string): PDFOperator {
   return PDFOperator.of(PDFOperatorNames.BeginMarkedContentSequence, [PDFName.of(structType), PDFName.of(propName)] as never)
@@ -111,7 +106,9 @@ function endMarkedContent(): PDFOperator {
 // ---------------------------------------------------------------------------
 export async function exportTaggedPDF(
   rawBytes: ArrayBuffer,
-  appDoc: PDFDocumentMeta
+  appDoc: PDFDocumentMeta,
+  docTitle: string,
+  docLanguage: string
 ): Promise<Uint8Array> {
   // ------------------------------------------------------------------
   // Step 1: Load and configure document metadata
@@ -135,9 +132,9 @@ export async function exportTaggedPDF(
   catalog.delete(PDFName.of('MarkInfo'))
 
   // Set document-level accessibility metadata
-  const title = appDoc.fileName.replace(/\.pdf$/i, '') || 'Accessible Document'
+  const title = docTitle.trim() || appDoc.fileName.replace(/\.pdf$/i, '') || 'Accessible Document'
   pdfDoc.setTitle(title, { showInWindowTitleBar: true })
-  pdfDoc.setLanguage('en-US')
+  pdfDoc.setLanguage(docLanguage || 'en-US')
 
   // MarkInfo: tells viewers this PDF has structure tags
   catalog.set(PDFName.of('MarkInfo'), context.obj({ Marked: true }))
@@ -268,10 +265,7 @@ export async function exportTaggedPDF(
             : ''
 
       if (textContent) {
-        // Encode via font to get proper encoding bytes
-        const encoded = font.encodeText(textContent)
-        // encoded is a PDFHexString — extract the bytes
-        operators.push(showTextString(Buffer.from(textContent, 'latin1')))
+        operators.push(showText(font.encodeText(textContent)))
       }
 
       operators.push(endMarkedContent())

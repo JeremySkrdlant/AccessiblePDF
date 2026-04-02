@@ -20,7 +20,7 @@ export function PageCanvas({ pageNum, containerWidth, renderPage }: PageCanvasPr
   const regions = useTagStore(
     (state) => state.document?.pages.find((p) => p.pageNumber === pageNum)?.regions ?? []
   )
-  const selectedRegionId = useTagStore((state) => state.selectedRegionId)
+  const selectedRegionIds = useTagStore((state) => state.selectedRegionIds)
   const selectRegion = useTagStore((state) => state.selectRegion)
 
   useEffect(() => {
@@ -69,7 +69,8 @@ export function PageCanvas({ pageNum, containerWidth, renderPage }: PageCanvasPr
             regions={regions}
             canvasWidth={dimensions.w}
             canvasHeight={dimensions.h}
-            selectedRegionId={selectedRegionId}
+            selectedRegionIds={selectedRegionIds}
+            pageNum={pageNum}
           />
         </div>
       )}

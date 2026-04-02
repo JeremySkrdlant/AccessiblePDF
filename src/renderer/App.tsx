@@ -8,7 +8,12 @@ import { TagPanel } from './components/TagPanel'
 import { ExportButton } from './components/ExportButton'
 
 export function App() {
-  const { document, rawPdfBytes, isOcrRunning, ocrProgress, setDocument, reset } = useTagStore()
+  const {
+    document, rawPdfBytes, isOcrRunning, ocrProgress,
+    docTitle, docLanguage, setDocTitle, setDocLanguage,
+    toolMode, setToolMode,
+    setDocument, reset
+  } = useTagStore()
 
   // usePDF is driven by the raw bytes stored in state
   const { pdfDoc, pageCount, isLoading, error, renderPage } = usePDF(rawPdfBytes)
@@ -58,8 +63,65 @@ export function App() {
             <span className="text-sm text-gray-600 font-medium">{document.fileName}</span>
           )}
         </div>
-        <ExportButton />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setToolMode(toolMode === 'draw' ? 'select' : 'draw')}
+            title={toolMode === 'draw' ? 'Exit draw mode (Esc)' : 'Draw image region'}
+            className={`
+              flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
+              ${toolMode === 'draw'
+                ? 'bg-green-600 text-white hover:bg-green-700'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }
+            `}
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 16 16" stroke="currentColor" strokeWidth={1.5}>
+              <rect x="2" y="2" width="12" height="12" rx="1" strokeDasharray="3 2" />
+              <path d="M8 5v6M5 8h6" strokeLinecap="round" />
+            </svg>
+            {toolMode === 'draw' ? 'Drawing Image…' : 'Draw Image'}
+          </button>
+          <ExportButton />
+        </div>
       </header>
+
+      {/* Document properties bar */}
+      <div className="flex items-center gap-4 px-4 py-2 bg-gray-50 border-b border-gray-200 flex-shrink-0">
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          <label className="text-xs font-medium text-gray-500 whitespace-nowrap">
+            Document Title
+            <span className="text-red-400 ml-0.5">*</span>
+          </label>
+          <input
+            type="text"
+            value={docTitle}
+            onChange={(e) => setDocTitle(e.target.value)}
+            placeholder="Required for accessibility"
+            className="flex-1 min-w-0 rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Language</label>
+          <select
+            value={docLanguage}
+            onChange={(e) => setDocLanguage(e.target.value)}
+            className="rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            <option value="en-US">English (US)</option>
+            <option value="en-GB">English (UK)</option>
+            <option value="es-ES">Spanish</option>
+            <option value="fr-FR">French</option>
+            <option value="de-DE">German</option>
+            <option value="zh-CN">Chinese (Simplified)</option>
+            <option value="zh-TW">Chinese (Traditional)</option>
+            <option value="ja-JP">Japanese</option>
+            <option value="ko-KR">Korean</option>
+            <option value="ar-SA">Arabic</option>
+            <option value="pt-BR">Portuguese (Brazil)</option>
+            <option value="ru-RU">Russian</option>
+          </select>
+        </div>
+      </div>
 
       {/* Loading / error states */}
       {(isLoading || isOcrRunning) && (
