@@ -32,6 +32,7 @@ interface TagStore {
   groupSelectedRegions: (tag: string, name?: string) => void
   unparentSelected: () => void
   moveRegion: (regionId: string, newParentId: string | null) => void
+  reorderRegion: (draggedId: string, targetId: string, position: 'before' | 'after' | 'inside') => void
   setOcrProgress: (progress: number) => void
   setOcrRunning: (running: boolean) => void
   reset: () => void
@@ -284,6 +285,68 @@ export const useTagStore = create<TagStore>((set, get) => ({
           regions: page.regions.map(r =>
             r.id === regionId ? { ...r, parentId: newParentId || undefined } : r
           )
+        }))
+      }
+    })
+  },
+
+  reorderRegion: (draggedId, targetId, position) => {
+    const doc = get().document
+    if (!doc) return
+
+    get().saveHistory()
+
+    const allRegions = doc.pages.flatMap(p => p.regions)
+    const dragged = allRegions.find(r => r.id === draggedId)
+    const target = allRegions.find(r => r.id === targetId)
+    if (!dragged || !target) return
+
+    let targetParentId = target.parentId
+
+    if (position === 'inside') {
+      targetParentId = targetId
+    }
+
+    // Construct siblings without dragged item, maintaining existing sort order
+    let siblings = allRegions
+      .filter(r => r.parentId === targetParentId && r.id !== draggedId)
+      .sort((a, b) => {
+        if (a.readingOrder !== undefined && b.readingOrder !== undefined) return a.readingOrder - b.readingOrder
+        if (a.readingOrder !== undefined) return -1
+        if (b.readingOrder !== undefined) return 1
+        return a.pageNumber - b.pageNumber || a.bbox.y - b.bbox.y || a.bbox.x - b.bbox.x
+      })
+
+    // Splice dragged into siblings array at correct index
+    if (position === 'inside') {
+      siblings.push(dragged)
+    } else {
+      const idx = siblings.findIndex(r => r.id === targetId)
+      if (idx !== -1) {
+        siblings.splice(position === 'before' ? idx : idx + 1, 0, dragged)
+      } else {
+        siblings.push(dragged)
+      }
+    }
+
+    const updatedSiblingMap = new Map<string, number>()
+    siblings.forEach((r, idx) => updatedSiblingMap.set(r.id, idx))
+
+    set({
+      document: {
+        ...doc,
+        pages: doc.pages.map(page => ({
+          ...page,
+          regions: page.regions.map(r => {
+            if (updatedSiblingMap.has(r.id)) {
+              return { 
+                ...r, 
+                parentId: targetParentId, // Reparent implicitly if moved
+                readingOrder: updatedSiblingMap.get(r.id) 
+              }
+            }
+            return r
+          })
         }))
       }
     })

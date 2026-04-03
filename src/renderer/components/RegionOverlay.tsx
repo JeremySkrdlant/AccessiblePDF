@@ -46,7 +46,8 @@ export function RegionOverlay({
         selectRegion(null)
         return
       }
-      if (e.key.toLowerCase() === 'm') {
+      if (e.key === ' ') {
+        e.preventDefault()
         mergeSelectedRegions()
         return
       }

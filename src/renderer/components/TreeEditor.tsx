@@ -4,8 +4,8 @@ import { PDFRegion } from '../lib/types'
 import { TagBadge } from './TagBadge'
 
 export function TreeEditor() {
-  const { document, selectedRegionIds, selectRegion, groupSelectedRegions, unparentSelected, moveRegion, updateRegion } = useTagStore()
-  const [dragOverId, setDragOverId] = useState<string | null>(null)
+  const { document, selectedRegionIds, selectRegion, groupSelectedRegions, unparentSelected, moveRegion, updateRegion, reorderRegion } = useTagStore()
+  const [dropTarget, setDropTarget] = useState<{ id: string; position: 'before' | 'after' | 'inside' } | null>(null)
 
   if (!document) return null
 
@@ -44,35 +44,53 @@ export function TreeEditor() {
             e.dataTransfer.setData('text/plain', region.id)
             e.dataTransfer.effectAllowed = 'move'
           }}
-          onDragOver={(e) => {
-            if (isGroup) {
-              e.preventDefault()
-              e.dataTransfer.dropEffect = 'move'
-            }
-          }}
+          onDragEnd={() => setDropTarget(null)}
           onDragEnter={(e) => {
-            if (isGroup) setDragOverId(region.id)
+            e.preventDefault()
+            e.stopPropagation()
           }}
-          onDragLeave={() => {
-            if (dragOverId === region.id) setDragOverId(null)
+          onDragOver={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            e.dataTransfer.dropEffect = 'move'
+            
+            const rect = e.currentTarget.getBoundingClientRect()
+            const y = e.clientY - rect.top
+            
+            let pos: 'before' | 'after' | 'inside'
+            if (isGroup && y > rect.height * 0.25 && y < rect.height * 0.75) {
+              pos = 'inside'
+            } else if (y < rect.height * 0.5) {
+              pos = 'before'
+            } else {
+              pos = 'after'
+            }
+            
+            setDropTarget(prev => (prev?.id === region.id && prev?.position === pos) ? prev : { id: region.id, position: pos })
           }}
           onDrop={(e) => {
             e.preventDefault()
             e.stopPropagation()
-            setDragOverId(null)
-            if (isGroup) {
-              const draggedId = e.dataTransfer.getData('text/plain')
-              if (draggedId && draggedId !== region.id) {
-                moveRegion(draggedId, region.id)
-                // Also expand the group so the user sees the dropped item
+            if (!dropTarget) return
+            
+            const draggedId = e.dataTransfer.getData('text/plain')
+            if (draggedId && draggedId !== region.id) {
+              reorderRegion(draggedId, dropTarget.id, dropTarget.position)
+              if (dropTarget.position === 'inside') {
                 updateRegion(region.id, { isExpanded: true })
               }
             }
+            setDropTarget(null)
           }}
           className={`flex items-center group gap-2 py-1.5 px-2 text-sm cursor-pointer border border-transparent rounded-md transition-colors ${
             isSelected ? 'bg-blue-100 border-blue-300' : 'hover:bg-gray-100'
-          } ${dragOverId === region.id ? 'bg-blue-50 border-blue-400 ring-2 ring-blue-400' : ''}`}
-          style={{ paddingLeft: `${depth * 1.5 + 0.5}rem` }}
+          } ${dropTarget?.id === region.id && dropTarget.position === 'inside' ? 'bg-blue-50 border-blue-400 ring-2 ring-blue-400' : ''}`}
+          style={{ 
+            paddingLeft: `${depth * 1.5 + 0.5}rem`,
+            boxShadow: dropTarget?.id === region.id 
+              ? (dropTarget.position === 'before' ? 'inset 0 2px 0 0 #3b82f6' : dropTarget.position === 'after' ? 'inset 0 -2px 0 0 #3b82f6' : undefined) 
+              : undefined
+          }}
           onClick={(e) => {
             if (e.metaKey || e.ctrlKey) {
               const { setSelectedRegionIds } = useTagStore.getState()
@@ -161,18 +179,16 @@ export function TreeEditor() {
       </div>
 
       <div 
-        className={`flex-1 overflow-y-auto p-2 ${dragOverId === 'root' ? 'bg-gray-50 ring-inset ring-2 ring-blue-300' : ''}`}
+        className={`flex-1 overflow-y-auto p-2 ${dropTarget?.id === 'root' ? 'bg-gray-50 ring-inset ring-2 ring-blue-300' : ''}`}
+        onDragEnter={(e) => e.preventDefault()}
         onDragOver={(e) => {
           e.preventDefault()
           e.dataTransfer.dropEffect = 'move'
-        }}
-        onDragEnter={() => setDragOverId('root')}
-        onDragLeave={() => {
-          if (dragOverId === 'root') setDragOverId(null)
+          setDropTarget(prev => (prev?.id === 'root' && prev?.position === 'inside') ? prev : { id: 'root', position: 'inside' })
         }}
         onDrop={(e) => {
           e.preventDefault()
-          setDragOverId(null)
+          setDropTarget(null)
           const draggedId = e.dataTransfer.getData('text/plain')
           if (draggedId) {
             moveRegion(draggedId, null) // unpack to root
