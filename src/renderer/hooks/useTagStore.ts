@@ -223,26 +223,33 @@ export const useTagStore = create<TagStore>((set, get) => ({
 
     get().saveHistory()
 
+    const firstSelectedId = selectedRegionIds[0]
+    const allRegions = document.pages.flatMap(p => p.regions)
+    const firstSelectedRegion = allRegions.find(r => r.id === firstSelectedId)
+    const targetPageNum = firstSelectedRegion?.pageNumber || 1
+
     const groupId = `group-${Date.now()}`
     const groupRegion: PDFRegion = {
       id: groupId,
-      pageNumber: 0, // 0 for document-level abstract group
+      pageNumber: targetPageNum,
       bbox: { x: 0, y: 0, width: 0, height: 0 },
       type: 'group',
       tag: tag,
       altText: name, // reuse altText as the custom group name
-      isExpanded: true
+      isExpanded: true,
+      parentId: firstSelectedRegion?.parentId,
+      readingOrder: firstSelectedRegion?.readingOrder
     }
 
     set({
       document: {
         ...document,
-        pages: document.pages.map((page, idx) => {
+        pages: document.pages.map(page => {
           let newRegions = page.regions.map(r => 
             selectedRegionIds.includes(r.id) ? { ...r, parentId: groupId } : r
           )
-          // Add the group abstract region to the first page just to store it
-          if (idx === 0) {
+          // Add the group abstract region to the page where it structurally originated
+          if (page.pageNumber === targetPageNum) {
             newRegions.push(groupRegion)
           }
           return { ...page, regions: newRegions }

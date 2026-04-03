@@ -182,6 +182,9 @@ export async function exportTaggedPDF(
   const language = docLanguage || 'en-US'
   pdfDoc.setLanguage(language)
 
+  // ForceViewerPreferences to guarantee DisplayDocTitle is natively recognized by PAC checkers
+  catalog.set(PDFName.of('ViewerPreferences'), context.obj({ DisplayDocTitle: true }))
+
   // MarkInfo: tells viewers this PDF has structure tags
   catalog.set(PDFName.of('MarkInfo'), context.obj({ Marked: true }))
 
@@ -387,9 +390,37 @@ export async function exportTaggedPDF(
         // Group container (can be any tag: List, Div, Sect, etc.)
         const groupRef = context.nextRef()
         const childRefs = buildElemRefs(node.children, groupRef)
-        const kArr = context.obj(childRefs.map((c) => c.ref)) as PDFArray
         
         let structType = toStructType(node.tag)
+        
+        // PDF/UA Auto-fix: If this is an 'L' (List), all children MUST be wrapped in 'LI' and 'LBody' natively
+        let kArrElements = childRefs.map((c) => c.ref)
+        if (structType === 'L') {
+          kArrElements = childRefs.map((child, idx) => {
+            const childDict = context.lookup(child.ref) as PDFDict
+            const sName = childDict?.get(PDFName.of('S'))
+            if (sName && sName.toString() === '/LI') {
+              // Already properly a list item, leave as is
+              return child.ref
+            }
+
+            // Strictly wrap the element inside an LI
+            const liRef = context.nextRef()
+            const lbodyRef = context.nextRef()
+            
+            // LI -> LBody -> child
+            context.assign(lbodyRef, context.obj({ Type: 'StructElem', S: 'LBody', P: liRef, K: child.ref }))
+            context.assign(liRef, context.obj({ Type: 'StructElem', S: 'LI', P: groupRef, K: lbodyRef }))
+            
+            // Re-parent the child to point to the LBody wrapper instead of groupRef
+            if (childDict) childDict.set(PDFName.of('P'), lbodyRef)
+            
+            return liRef
+          })
+        }
+        
+        const kArr = context.obj(kArrElements) as PDFArray
+        
         const groupDict = context.obj({
           Type: 'StructElem',
           S: structType,
