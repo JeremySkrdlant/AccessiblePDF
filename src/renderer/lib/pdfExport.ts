@@ -483,7 +483,12 @@ export async function exportTaggedPDF(
             const { width: pageW, height: pageH } = pdfPages[pageIdx].getSize()
             const pdfX = region.bbox.x * pageW
             const pdfY = pageH - (region.bbox.y + region.bbox.height) * pageH
-            elemDict.set(PDFName.of('BBox'), context.obj([pdfX, pdfY, pdfX + region.bbox.width * pageW, pdfY + region.bbox.height * pageH]))
+            
+            const attrDict = context.obj({
+              O: 'Layout',
+              BBox: [pdfX, pdfY, pdfX + region.bbox.width * pageW, pdfY + region.bbox.height * pageH]
+            });
+            elemDict.set(PDFName.of('A'), attrDict)
           }
         }
 
