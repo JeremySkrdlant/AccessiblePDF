@@ -18,14 +18,16 @@ export interface BoundingBox {
 }
 
 export interface PDFRegion {
-  id: string           // `page-${pageNum}-region-${idx}`
-  pageNumber: number   // 1-indexed
-  bbox: BoundingBox
-  type: 'text' | 'image'
+  id: string           // `page-${pageNum}-region-${idx}` or `group-${Date.now()}`
+  pageNumber: number   // 1-indexed (can be 0 or current page for groups)
+  bbox: BoundingBox    // Can be zero-size for logical groups
+  type: 'text' | 'image' | 'group'
   ocrText?: string
-  tag: TagRole
+  tag: TagRole | string
   altText?: string
   readingOrder?: number
+  parentId?: string
+  isExpanded?: boolean
 }
 
 export interface PDFPage {

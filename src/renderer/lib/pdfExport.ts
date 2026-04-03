@@ -18,50 +18,54 @@ import type { PDFDocumentMeta, PDFRegion, TagRole } from './types'
 // ---------------------------------------------------------------------------
 // Tag role → PDF structure type mapping
 // ---------------------------------------------------------------------------
-function toStructType(role: NonNullable<TagRole>): string {
-  const map: Record<NonNullable<TagRole>, string> = {
+function toStructType(role: string): string {
+  const map: Record<string, string> = {
     H1: 'H1', H2: 'H2', H3: 'H3', H4: 'H4', H5: 'H5', H6: 'H6',
     P: 'P',
     Figure: 'Figure',
     Caption: 'Caption',
     Table: 'Table',
     List: 'L',      // PDF/UA uses /L for list container
+    Column: 'Div',
     ListItem: 'LI', // PDF/UA uses /LI for list item
     Artifact: 'Artifact'
   }
-  return map[role]
+  return map[role] || 'Div'
 }
 
 // ---------------------------------------------------------------------------
 // Logical structure node (used to group ListItems under a List parent)
 // ---------------------------------------------------------------------------
 interface StructNode {
-  tag: NonNullable<TagRole>
-  region?: PDFRegion       // undefined for synthetic List containers
-  children?: StructNode[]  // only for List containers
+  tag: string
+  region?: PDFRegion       // undefined for abstract groups
+  children?: StructNode[]
 }
 
 function buildStructNodes(regions: PDFRegion[]): StructNode[] {
-  const nodes: StructNode[] = []
-  let i = 0
-  while (i < regions.length) {
-    const r = regions[i]
-    if (r.tag === 'ListItem') {
-      // Collect consecutive ListItems under a synthetic List node
-      const listNode: StructNode = { tag: 'List', children: [] }
-      while (i < regions.length && regions[i].tag === 'ListItem') {
-        listNode.children!.push({ tag: 'ListItem', region: regions[i] })
-        i++
-      }
-      nodes.push(listNode)
-    } else if (r.tag !== null) {
-      nodes.push({ tag: r.tag as NonNullable<TagRole>, region: r })
-      i++
+  const childrenMap = new Map<string, PDFRegion[]>()
+  const roots: PDFRegion[] = []
+
+  for (const r of regions) {
+    if (r.parentId) {
+      if (!childrenMap.has(r.parentId)) childrenMap.set(r.parentId, [])
+      childrenMap.get(r.parentId)!.push(r)
     } else {
-      i++ // skip untagged
+      roots.push(r)
     }
   }
-  return nodes
+
+  function resolveNode(r: PDFRegion): StructNode {
+    const children = childrenMap.get(r.id) || []
+    const childNodes = children.map(resolveNode)
+    return {
+      tag: r.tag || 'Div',
+      region: r.type === 'group' ? undefined : r,
+      children: childNodes.length > 0 ? childNodes : undefined
+    }
+  }
+
+  return roots.map(resolveNode)
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +324,7 @@ export async function exportTaggedPDF(
         if (mcid === undefined) continue
 
         const propName = `MC${mcid}`
-        const structType = toStructType(region.tag as NonNullable<TagRole>)
+        const structType = toStructType(region.tag as string)
 
         operators.push(beginMarkedContentProps(structType, propName))
 
@@ -376,32 +380,27 @@ export async function exportTaggedPDF(
     ref: PDFRef
   }
 
-  function buildElemRefs(nodes: StructNode[]): BuiltElem[] {
+  function buildElemRefs(nodes: StructNode[], parentRef: PDFRef): BuiltElem[] {
     const results: BuiltElem[] = []
     for (const node of nodes) {
-      if (node.children) {
-        // List container
-        const listRef = context.nextRef()
-        const childRefs = buildElemRefs(node.children)
+      if (node.children && node.children.length > 0) {
+        // Group container (can be any tag: List, Div, Sect, etc.)
+        const groupRef = context.nextRef()
+        const childRefs = buildElemRefs(node.children, groupRef)
         const kArr = context.obj(childRefs.map((c) => c.ref)) as PDFArray
-        const listDict = context.obj({
+        
+        let structType = toStructType(node.tag)
+        const groupDict = context.obj({
           Type: 'StructElem',
-          S: 'L',
-          P: documentElemRef,
+          S: structType,
+          P: parentRef,
           K: kArr
         }) as PDFDict
-        // Update children's parent pointer
-        for (const child of childRefs) {
-          const childDict = context.lookup(child.ref) as PDFDict
-          childDict.set(PDFName.of('P'), listRef)
-        }
-        context.assign(listRef, listDict)
-        results.push({ ref: listRef })
-      } else if (node.region) {
-        if (node.tag === 'Artifact') {
-          // Artifacts are not in the structure tree — skip allocating a ref
-          continue
-        }
+        
+        context.assign(groupRef, groupDict)
+        results.push({ ref: groupRef })
+      } else if (node.region && node.region.type !== 'group') {
+        if (node.tag === 'Artifact') continue
 
         const region = node.region
         const elemRef = context.nextRef()
@@ -411,7 +410,7 @@ export async function exportTaggedPDF(
         const elemDict = context.obj({
           Type: 'StructElem',
           S: toStructType(node.tag),
-          P: documentElemRef,
+          P: parentRef,
           Pg: pageRef
         }) as PDFDict
 
@@ -449,10 +448,12 @@ export async function exportTaggedPDF(
           if (region.altText) {
             elemDict.set(PDFName.of('Alt'), PDFString.of(region.altText))
           }
-          const { width: pageW, height: pageH } = pdfPages[pageIdx].getSize()
-          const pdfX = region.bbox.x * pageW
-          const pdfY = pageH - (region.bbox.y + region.bbox.height) * pageH
-          elemDict.set(PDFName.of('BBox'), context.obj([pdfX, pdfY, pdfX + region.bbox.width * pageW, pdfY + region.bbox.height * pageH]))
+          if (pdfPages[pageIdx]) {
+            const { width: pageW, height: pageH } = pdfPages[pageIdx].getSize()
+            const pdfX = region.bbox.x * pageW
+            const pdfY = pageH - (region.bbox.y + region.bbox.height) * pageH
+            elemDict.set(PDFName.of('BBox'), context.obj([pdfX, pdfY, pdfX + region.bbox.width * pageW, pdfY + region.bbox.height * pageH]))
+          }
         }
 
         context.assign(elemRef, elemDict)
@@ -462,7 +463,7 @@ export async function exportTaggedPDF(
     return results
   }
 
-  const builtElems = buildElemRefs(structNodes)
+  const builtElems = buildElemRefs(structNodes, documentElemRef)
 
   // ------------------------------------------------------------------
   // Step 8: Build the Document StructElement

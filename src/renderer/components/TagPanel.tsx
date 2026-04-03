@@ -165,8 +165,22 @@ export function TagPanel() {
       )}
 
       <div className="p-4 flex-1 flex flex-col gap-4">
+        {/* Group name editor */}
+        {region.type === 'group' && (
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold text-gray-700">Group Name</label>
+            <input
+              type="text"
+              value={region.altText || ''}
+              onChange={(e) => updateRegion(region.id, { altText: e.target.value })}
+              className="rounded border border-gray-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+              placeholder="e.g. Navigation, Main Content"
+            />
+          </div>
+        )}
+
         {/* Alt text editor — shown whenever tag is Figure */}
-        {region.tag === 'Figure' || region.type === 'image' ? (
+        {(region.tag === 'Figure' || region.type === 'image') && region.type !== 'group' ? (
           <ImageAltEditor region={region} />
         ) : null}
 

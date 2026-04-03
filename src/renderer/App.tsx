@@ -1,19 +1,37 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect } from 'react'
 import { usePDF } from './hooks/usePDF'
 import { useOCR } from './hooks/useOCR'
 import { useTagStore } from './hooks/useTagStore'
 import { DropZone } from './components/DropZone'
 import { PDFViewer } from './components/PDFViewer'
 import { TagPanel } from './components/TagPanel'
+import { TreeEditor } from './components/TreeEditor'
 import { ExportButton } from './components/ExportButton'
-
 export function App() {
   const {
     document, rawPdfBytes, isOcrRunning, ocrProgress,
     docTitle, docLanguage, setDocTitle, setDocLanguage,
     toolMode, setToolMode,
-    setDocument, reset
+    setDocument, reset, undo, redo,
+    history, future
   } = useTagStore()
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault()
+        if (e.shiftKey) {
+          useTagStore.getState().redo()
+        } else {
+          useTagStore.getState().undo()
+        }
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   // usePDF is driven by the raw bytes stored in state
   const { pdfDoc, pageCount, isLoading, error, renderPage } = usePDF(rawPdfBytes)
@@ -64,6 +82,30 @@ export function App() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          {/* Undo/Redo */}
+          <div className="flex items-center gap-1 border-r border-gray-200 pr-2 mr-1">
+            <button
+              onClick={undo}
+              disabled={history.length === 0}
+              className="p-1.5 text-gray-500 rounded hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+              title="Undo (Cmd+Z)"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+              </svg>
+            </button>
+            <button
+              onClick={redo}
+              disabled={future.length === 0}
+              className="p-1.5 text-gray-500 rounded hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+              title="Redo (Cmd+Shift+Z)"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 10h-10a8 8 0 00-8 8v2M21 10l-6 6m6-6l-6-6" />
+              </svg>
+            </button>
+          </div>
+
           <button
             onClick={() => setToolMode(toolMode === 'draw' ? 'select' : 'draw')}
             title={toolMode === 'draw' ? 'Exit draw mode (Esc)' : 'Draw image region'}
@@ -150,6 +192,7 @@ export function App() {
 
       {/* Main content */}
       <div className="flex flex-1 min-h-0">
+        {pdfDoc && pageCount > 0 && <TreeEditor />}
         {pdfDoc && pageCount > 0 && (
           <PDFViewer pageCount={pageCount} renderPage={renderPage} />
         )}

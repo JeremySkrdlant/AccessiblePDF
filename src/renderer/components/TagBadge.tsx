@@ -32,10 +32,11 @@ const TAG_LABELS: Record<NonNullable<TagRole>, string> = {
   Artifact: 'Art'
 }
 
-export function TagBadge({ tag, small = false }: TagBadgeProps) {
+export function TagBadge({ tag, small = false }: { tag: string | null; small?: boolean }) {
   if (!tag) return null
-  const color = TAG_COLORS[tag]
-  const label = TAG_LABELS[tag]
+  const role = tag as NonNullable<TagRole>
+  const color = TAG_COLORS[role] || 'bg-indigo-500 text-white'
+  const label = TAG_LABELS[role] || tag
   const size = small ? 'text-[10px] px-1 py-0' : 'text-xs px-1.5 py-0.5'
   return (
     <span className={`inline-block rounded font-bold leading-tight ${size} ${color}`}>

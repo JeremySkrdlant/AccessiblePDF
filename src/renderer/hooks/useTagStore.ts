@@ -1,6 +1,11 @@
 import { create } from 'zustand'
 import type { PDFDocumentMeta, PDFRegion, BoundingBox } from '../lib/types'
 
+interface HistoryState {
+  document: PDFDocumentMeta
+  selectedRegionIds: string[]
+}
+
 interface TagStore {
   document: PDFDocumentMeta | null
   rawPdfBytes: ArrayBuffer | null
@@ -10,6 +15,9 @@ interface TagStore {
   docTitle: string
   docLanguage: string
   toolMode: 'select' | 'draw'
+
+  history: HistoryState[]
+  future: HistoryState[]
 
   setDocument: (doc: PDFDocumentMeta, rawBytes: ArrayBuffer) => void
   setDocTitle: (title: string) => void
@@ -21,9 +29,16 @@ interface TagStore {
   setSelectedRegionIds: (ids: string[]) => void
   mergeSelectedRegions: () => void
   getPageRegions: (pageNumber: number) => PDFRegion[]
+  groupSelectedRegions: (tag: string, name?: string) => void
+  unparentSelected: () => void
+  moveRegion: (regionId: string, newParentId: string | null) => void
   setOcrProgress: (progress: number) => void
   setOcrRunning: (running: boolean) => void
   reset: () => void
+
+  saveHistory: () => void
+  undo: () => void
+  redo: () => void
 
   // Derived helper — the single selected id (when exactly one is selected)
   selectedRegionId: string | null
@@ -36,6 +51,8 @@ export const useTagStore = create<TagStore>((set, get) => ({
   docTitle: '',
   docLanguage: 'en-US',
   toolMode: 'select',
+  history: [],
+  future: [],
   get selectedRegionId() {
     const ids = get().selectedRegionIds
     return ids.length === 1 ? ids[0] : null
@@ -49,6 +66,8 @@ export const useTagStore = create<TagStore>((set, get) => ({
       rawPdfBytes: rawBytes,
       selectedRegionIds: [],
       ocrProgress: 0,
+      history: [],
+      future: [],
       // Pre-fill title from filename (strip extension), keep existing language
       docTitle: doc.fileName.replace(/\.pdf$/i, '') || ''
     }),
@@ -60,6 +79,7 @@ export const useTagStore = create<TagStore>((set, get) => ({
   addRegion: (region) => {
     const doc = get().document
     if (!doc) return
+    get().saveHistory()
     const isFigure = region.tag === 'Figure' || region.type === 'image'
     set({
       document: {
@@ -87,6 +107,7 @@ export const useTagStore = create<TagStore>((set, get) => ({
   updateRegion: (regionId, updates) => {
     const doc = get().document
     if (!doc) return
+    get().saveHistory()
     set({
       document: {
         ...doc,
@@ -128,6 +149,8 @@ export const useTagStore = create<TagStore>((set, get) => ({
   mergeSelectedRegions: () => {
     const { document, selectedRegionIds } = get()
     if (!document || selectedRegionIds.length < 2) return
+
+    get().saveHistory()
 
     // Collect all selected regions (may span pages, but typically same page)
     const allRegions = document.pages.flatMap((p) => p.regions)
@@ -193,6 +216,79 @@ export const useTagStore = create<TagStore>((set, get) => ({
     return doc.pages.find((p) => p.pageNumber === pageNumber)?.regions ?? []
   },
 
+  groupSelectedRegions: (tag, name) => {
+    const { document, selectedRegionIds } = get()
+    if (!document || selectedRegionIds.length === 0) return
+
+    get().saveHistory()
+
+    const groupId = `group-${Date.now()}`
+    const groupRegion: PDFRegion = {
+      id: groupId,
+      pageNumber: 0, // 0 for document-level abstract group
+      bbox: { x: 0, y: 0, width: 0, height: 0 },
+      type: 'group',
+      tag: tag,
+      altText: name, // reuse altText as the custom group name
+      isExpanded: true
+    }
+
+    set({
+      document: {
+        ...document,
+        pages: document.pages.map((page, idx) => {
+          let newRegions = page.regions.map(r => 
+            selectedRegionIds.includes(r.id) ? { ...r, parentId: groupId } : r
+          )
+          // Add the group abstract region to the first page just to store it
+          if (idx === 0) {
+            newRegions.push(groupRegion)
+          }
+          return { ...page, regions: newRegions }
+        })
+      },
+      selectedRegionIds: [groupId]
+    })
+  },
+
+  unparentSelected: () => {
+    const { document, selectedRegionIds } = get()
+    if (!document || selectedRegionIds.length === 0) return
+
+    get().saveHistory()
+
+    set({
+      document: {
+        ...document,
+        pages: document.pages.map(page => ({
+          ...page,
+          regions: page.regions.map(r =>
+            selectedRegionIds.includes(r.id) ? { ...r, parentId: undefined } : r
+          )
+        }))
+      }
+    })
+  },
+
+  moveRegion: (regionId, newParentId) => {
+    const doc = get().document
+    if (!doc) return
+
+    get().saveHistory()
+
+    set({
+      document: {
+        ...doc,
+        pages: doc.pages.map(page => ({
+          ...page,
+          regions: page.regions.map(r =>
+            r.id === regionId ? { ...r, parentId: newParentId || undefined } : r
+          )
+        }))
+      }
+    })
+  },
+
   setOcrProgress: (progress) => set({ ocrProgress: progress }),
   setOcrRunning: (running) => set({ isOcrRunning: running }),
 
@@ -205,6 +301,49 @@ export const useTagStore = create<TagStore>((set, get) => ({
       isOcrRunning: false,
       docTitle: '',
       docLanguage: 'en-US',
-      toolMode: 'select'
+      toolMode: 'select',
+      history: [],
+      future: []
+    }),
+
+  saveHistory: () => {
+    const { document, selectedRegionIds } = get()
+    if (!document) return
+    // Deep clone doc to avoid mutated references (JSON stringify hack works well for basic objects)
+    const clonedDoc = JSON.parse(JSON.stringify(document))
+    set((state) => ({
+      history: [...state.history, { document: clonedDoc, selectedRegionIds: [...selectedRegionIds] }],
+      future: [] // Clear future when new action happens
+    }))
+  },
+
+  undo: () => {
+    const { history, future, document, selectedRegionIds } = get()
+    if (history.length === 0 || !document) return
+
+    const previousState = history[history.length - 1]
+    const currentDoc = JSON.parse(JSON.stringify(document))
+
+    set({
+      document: previousState.document,
+      selectedRegionIds: previousState.selectedRegionIds,
+      history: history.slice(0, -1),
+      future: [...future, { document: currentDoc, selectedRegionIds: [...selectedRegionIds] }]
     })
+  },
+
+  redo: () => {
+    const { history, future, document, selectedRegionIds } = get()
+    if (future.length === 0 || !document) return
+
+    const nextState = future[future.length - 1]
+    const currentDoc = JSON.parse(JSON.stringify(document))
+
+    set({
+      document: nextState.document,
+      selectedRegionIds: nextState.selectedRegionIds,
+      history: [...history, { document: currentDoc, selectedRegionIds: [...selectedRegionIds] }],
+      future: future.slice(0, -1)
+    })
+  }
 }))
