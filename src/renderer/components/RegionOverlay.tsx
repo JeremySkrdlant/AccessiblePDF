@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { PDFRegion, TagRole } from '../lib/types'
+import type { BoundingBox, PDFRegion, TagRole } from '../lib/types'
 import { TagBadge } from './TagBadge'
 import { useTagStore } from '../hooks/useTagStore'
 
@@ -18,6 +18,26 @@ interface DragRect {
   height: number
 }
 
+type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
+
+const HANDLE_CURSORS: Record<ResizeHandle, string> = {
+  nw: 'nwse-resize', n: 'ns-resize', ne: 'nesw-resize',
+  e: 'ew-resize', se: 'nwse-resize', s: 'ns-resize',
+  sw: 'nesw-resize', w: 'ew-resize'
+}
+
+// Position each handle on the border (half outside, half inside)
+const HANDLE_STYLE: Record<ResizeHandle, React.CSSProperties> = {
+  nw: { top: -4, left: -4 },
+  n:  { top: -4, left: '50%', transform: 'translateX(-50%)' },
+  ne: { top: -4, right: -4 },
+  e:  { top: '50%', right: -4, transform: 'translateY(-50%)' },
+  se: { bottom: -4, right: -4 },
+  s:  { bottom: -4, left: '50%', transform: 'translateX(-50%)' },
+  sw: { bottom: -4, left: -4 },
+  w:  { top: '50%', left: -4, transform: 'translateY(-50%)' },
+}
+
 const KEY_TO_TAG: Record<string, TagRole> = {
   '1': 'H1', '2': 'H2', '3': 'H3', '4': 'H4', '5': 'H5', '6': 'H6',
   p: 'P', f: 'Figure', c: 'Caption', t: 'Table', l: 'List', i: 'ListItem', a: 'Artifact'
@@ -29,6 +49,30 @@ function rectsIntersect(r: PDFRegion, drag: DragRect, cw: number, ch: number): b
   return rx < drag.x + drag.width && rx + rw > drag.x && ry < drag.y + drag.height && ry + rh > drag.y
 }
 
+function computeResizedBbox(
+  orig: BoundingBox,
+  handle: ResizeHandle,
+  dx: number, dy: number,
+  cw: number, ch: number
+): BoundingBox {
+  const ndx = dx / cw
+  const ndy = dy / ch
+  let { x, y, width, height } = orig
+
+  if (handle.includes('n')) { y += ndy; height -= ndy }
+  if (handle.includes('s')) { height += ndy }
+  if (handle.includes('e')) { width += ndx }
+  if (handle.includes('w')) { x += ndx; width -= ndx }
+
+  // Clamp to [0,1] and enforce minimum size
+  width = Math.max(0.01, width)
+  height = Math.max(0.01, height)
+  x = Math.max(0, Math.min(x, 1 - width))
+  y = Math.max(0, Math.min(y, 1 - height))
+
+  return { x, y, width, height }
+}
+
 export function RegionOverlay({
   regions, canvasWidth, canvasHeight, selectedRegionIds, pageNum
 }: RegionOverlayProps) {
@@ -36,6 +80,16 @@ export function RegionOverlay({
   const overlayRef = useRef<HTMLDivElement>(null)
   const dragStartRef = useRef<{ x: number; y: number } | null>(null)
   const [dragRect, setDragRect] = useState<DragRect | null>(null)
+
+  // Resize state
+  const resizeRef = useRef<{
+    regionId: string
+    handle: ResizeHandle
+    startX: number
+    startY: number
+    origBbox: BoundingBox
+  } | null>(null)
+  const [resizeBbox, setResizeBbox] = useState<{ regionId: string; bbox: BoundingBox } | null>(null)
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -74,6 +128,15 @@ export function RegionOverlay({
   }
 
   function onMouseMove(e: React.MouseEvent) {
+    // Handle resize drag
+    if (resizeRef.current) {
+      const { regionId, handle, startX, startY, origBbox } = resizeRef.current
+      const pos = getLocalCoords(e)
+      const newBbox = computeResizedBbox(origBbox, handle, pos.x - startX, pos.y - startY, canvasWidth, canvasHeight)
+      setResizeBbox({ regionId, bbox: newBbox })
+      return
+    }
+
     if (!dragStartRef.current) return
     const pos = getLocalCoords(e)
     const x = Math.min(dragStartRef.current.x, pos.x)
@@ -84,12 +147,22 @@ export function RegionOverlay({
   }
 
   function onMouseUp(e: React.MouseEvent) {
+    // Commit resize
+    if (resizeRef.current) {
+      const { regionId } = resizeRef.current
+      if (resizeBbox?.regionId === regionId) {
+        updateRegion(regionId, { bbox: resizeBbox.bbox })
+      }
+      resizeRef.current = null
+      setResizeBbox(null)
+      return
+    }
+
     const start = dragStartRef.current
     dragStartRef.current = null
 
     if (dragRect && (dragRect.width > 8 || dragRect.height > 8)) {
       if (toolMode === 'draw') {
-        // Create a new Figure region from the drawn rectangle
         const bbox = {
           x: dragRect.x / canvasWidth,
           y: dragRect.y / canvasHeight,
@@ -119,7 +192,7 @@ export function RegionOverlay({
 
   function onRegionClick(e: React.MouseEvent, id: string) {
     e.stopPropagation()
-    if (toolMode === 'draw') return // ignore region clicks in draw mode
+    if (toolMode === 'draw') return
     if (e.metaKey || e.ctrlKey) {
       setSelectedRegionIds(
         selectedRegionIds.includes(id)
@@ -131,22 +204,32 @@ export function RegionOverlay({
     }
   }
 
-  const cursor = toolMode === 'draw' ? 'cursor-crosshair' : 'cursor-default'
+  function onHandleMouseDown(e: React.MouseEvent, regionId: string, handle: ResizeHandle, origBbox: BoundingBox) {
+    e.stopPropagation()
+    e.preventDefault()
+    const pos = getLocalCoords(e)
+    resizeRef.current = { regionId, handle, startX: pos.x, startY: pos.y, origBbox }
+  }
+
+  const cursor = resizeBbox
+    ? (HANDLE_CURSORS[resizeRef.current?.handle ?? 'se'])
+    : toolMode === 'draw' ? 'cursor-crosshair' : 'cursor-default'
 
   return (
     <div
       ref={overlayRef}
-      className={`absolute inset-0 ${cursor}`}
-      style={{ width: canvasWidth, height: canvasHeight }}
+      className={`absolute inset-0 ${resizeBbox ? '' : cursor}`}
+      style={{ width: canvasWidth, height: canvasHeight, cursor: resizeBbox ? HANDLE_CURSORS[resizeRef.current?.handle ?? 'se'] : undefined }}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
     >
       {regions.map((region) => {
-        const x = region.bbox.x * canvasWidth
-        const y = region.bbox.y * canvasHeight
-        const w = region.bbox.width * canvasWidth
-        const h = region.bbox.height * canvasHeight
+        const activeBbox = resizeBbox?.regionId === region.id ? resizeBbox.bbox : region.bbox
+        const x = activeBbox.x * canvasWidth
+        const y = activeBbox.y * canvasHeight
+        const w = activeBbox.width * canvasWidth
+        const h = activeBbox.height * canvasHeight
         const isSelected = selectedRegionIds.includes(region.id)
         const hasTag = region.tag !== null
         const isImage = region.type === 'image' || region.tag === 'Figure'
@@ -172,6 +255,18 @@ export function RegionOverlay({
               <div className="absolute -top-4 left-0 pointer-events-none">
                 <TagBadge tag={region.tag} small />
               </div>
+            )}
+
+            {/* Resize handles — only on the single selected region */}
+            {isSelected && selectedRegionIds.length === 1 && toolMode === 'select' && (
+              (Object.keys(HANDLE_STYLE) as ResizeHandle[]).map((handle) => (
+                <div
+                  key={handle}
+                  className="absolute w-2.5 h-2.5 bg-white border-2 border-blue-500 rounded-sm z-30"
+                  style={{ ...HANDLE_STYLE[handle], cursor: HANDLE_CURSORS[handle] }}
+                  onMouseDown={(e) => onHandleMouseDown(e, region.id, handle, activeBbox)}
+                />
+              ))
             )}
           </div>
         )

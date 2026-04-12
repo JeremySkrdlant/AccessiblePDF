@@ -13,7 +13,7 @@ import {
   PDFOperatorNames,
   showText,
 } from 'pdf-lib'
-import type { PDFDocumentMeta, PDFRegion, TagRole } from './types'
+import type { PDFDocumentMeta, PDFRegion } from './types'
 
 // ---------------------------------------------------------------------------
 // Tag role → PDF structure type mapping
@@ -108,6 +108,18 @@ function buildXmpMetadata(title: string, language: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Sanitize text for WinAnsi font encoding (Helvetica).
+// WinAnsi (Windows-1252) has no control characters — newlines, tabs, etc.
+// will throw "WinAnsi cannot encode". Replace them with spaces.
+// ---------------------------------------------------------------------------
+function sanitizeForFont(text: string): string {
+  return text
+    .replace(/[\x00-\x1F\x7F]/g, ' ') // strip all control chars (incl. \n \r \t)
+    .replace(/ +/g, ' ')               // collapse runs of spaces
+    .trim()
+}
+
+// ---------------------------------------------------------------------------
 // Raw PDF operator helpers (pdf-lib doesn't expose all operators we need)
 // ---------------------------------------------------------------------------
 function op(name: PDFOperatorNames, ...args: Array<string | number>): PDFOperator {
@@ -186,7 +198,8 @@ export async function exportTaggedPDF(
   catalog.set(PDFName.of('ViewerPreferences'), context.obj({ DisplayDocTitle: true }))
 
   // MarkInfo: tells viewers this PDF has structure tags
-  catalog.set(PDFName.of('MarkInfo'), context.obj({ Marked: true }))
+  // Suspects: false is required by PDF/UA-1 — indicates tagging is reliable
+  catalog.set(PDFName.of('MarkInfo'), context.obj({ Marked: true, Suspects: false }))
 
   // PDF/UA-1 XMP metadata — required for pdfuaid:part identifier
   const xmpBytes = new TextEncoder().encode(buildXmpMetadata(title, language))
@@ -256,8 +269,8 @@ export async function exportTaggedPDF(
     page.node.set(PDFName.of('Tabs'), PDFName.of('S'))
     const { width: pageW, height: pageH } = page.getSize()
 
-    // Clear existing contents so we can completely rebuild them cleanly in one stream
-    page.node.set(PDFName.of('Contents'), context.obj([]))
+    // Will set Contents to a single new stream below — original streams are discarded
+    // because we embed the original page as a Form XObject (drawn via Do operator)
 
     const regionsOnPage = allTaggedRegions.filter((r) => r.pageNumber === pageNum)
 
@@ -345,8 +358,9 @@ export async function exportTaggedPDF(
               ? region.altText
               : ''
 
-        if (textContent) {
-          operators.push(showText(font.encodeText(textContent)))
+        const safeText = sanitizeForFont(textContent)
+        if (safeText) {
+          operators.push(showText(font.encodeText(safeText)))
         }
 
         operators.push(endMarkedContent())
@@ -356,11 +370,13 @@ export async function exportTaggedPDF(
       operators.push(popGraphicsState())
     }
 
-    // Create a NEW content stream and append it to the page
+    // Replace Contents entirely with our single new stream.
+    // The original content streams are discarded — visual content is preserved
+    // via the embedded Form XObject drawn above.
     const streamBytes = operators.map((o) => o.toString()).join('\n')
     const stream = context.flateStream(new TextEncoder().encode(streamBytes))
     const streamRef = context.register(stream)
-    page.node.addContentStream(streamRef)
+    page.node.set(PDFName.of('Contents'), streamRef)
   }
 
   // ------------------------------------------------------------------
@@ -396,7 +412,7 @@ export async function exportTaggedPDF(
         // PDF/UA Auto-fix: If this is an 'L' (List), all children MUST be wrapped in 'LI' and 'LBody' natively
         let kArrElements = childRefs.map((c) => c.ref)
         if (structType === 'L') {
-          kArrElements = childRefs.map((child, idx) => {
+          kArrElements = childRefs.map((child) => {
             const childDict = context.lookup(child.ref) as PDFDict
             const sName = childDict?.get(PDFName.of('S'))
             if (sName && sName.toString() === '/LI') {
@@ -473,6 +489,18 @@ export async function exportTaggedPDF(
              targetDict.set(PDFName.of('K'), PDFNumber.of(mcid))
           }
           registerElemForPage(region.pageNumber, mcid, targetRef)
+        }
+
+        // ActualText: VoiceOver/PDFKit on macOS reads this directly from the
+        // StructElement without needing to extract text from the content stream.
+        // This is the most reliable way to ensure screen readers get the text.
+        const actualTextContent = region.type === 'text'
+          ? (region.ocrText ?? '')
+          : region.type === 'image' && region.altText
+            ? region.altText
+            : ''
+        if (actualTextContent) {
+          elemDict.set(PDFName.of('ActualText'), PDFString.of(actualTextContent))
         }
 
         if (node.tag === 'Figure') {

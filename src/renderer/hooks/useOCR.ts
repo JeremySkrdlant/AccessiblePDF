@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { ocrPage } from '../lib/ocr'
+import { importStructuredPDF } from '../lib/pdfStructImport'
 import { useTagStore } from './useTagStore'
 import type { PDFPage } from '../lib/types'
 
@@ -37,6 +38,22 @@ export function useOCR({ pdfDoc, pageCount, renderPage, containerWidth }: UseOCR
 
     ;(async () => {
       try {
+        // ── Fast path: re-import an already-tagged PDF ──────────────────────
+        const importedPages = await importStructuredPDF(pdfDoc, pageCount, (fraction) => {
+          setOcrProgress(fraction * 0.5) // use first half of progress bar
+        })
+        if (importedPages) {
+          if (savedRawBytes) {
+            setDocument(
+              { filePath: savedFilePath, fileName: savedFileName, pageCount, pages: importedPages },
+              savedRawBytes
+            )
+          }
+          setOcrProgress(1)
+          return
+        }
+
+        // ── Slow path: OCR ──────────────────────────────────────────────────
         const pages: PDFPage[] = []
         for (let p = 1; p <= pageCount; p++) {
           const rendered = await renderPage(p, containerWidth)

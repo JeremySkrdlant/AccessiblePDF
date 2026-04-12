@@ -157,12 +157,6 @@ export function TagPanel() {
         </button>
       </div>
 
-      {region.type === 'text' && region.ocrText && region.tag !== 'Figure' && (
-        <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
-          <p className="text-xs text-gray-500 font-medium mb-1">OCR text</p>
-          <p className="text-xs text-gray-700 line-clamp-3 font-mono">{region.ocrText}</p>
-        </div>
-      )}
 
       <div className="p-4 flex-1 flex flex-col gap-4">
         {/* Group name editor */}
@@ -222,20 +216,18 @@ export function TagPanel() {
         </div>
       </div>
 
-      <div className="p-4 border-t border-gray-100">
-        <label className="text-xs font-medium text-gray-500">Reading order (optional)</label>
-        <input
-          type="number"
-          min={0}
-          value={region.readingOrder ?? ''}
-          placeholder="Auto"
-          onChange={(e) => {
-            const val = e.target.value === '' ? undefined : parseInt(e.target.value, 10)
-            updateRegion(region.id, { readingOrder: val })
-          }}
-          className="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-        />
-      </div>
+      {region.type === 'text' && (
+        <div className="p-4 border-t border-gray-100">
+          <label className="text-xs font-medium text-gray-500">Selected text</label>
+          <textarea
+            rows={4}
+            value={region.ocrText ?? ''}
+            onChange={(e) => updateRegion(region.id, { ocrText: e.target.value })}
+            className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+            placeholder="No text detected"
+          />
+        </div>
+      )}
     </div>
   )
 }

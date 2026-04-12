@@ -1,11 +1,21 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useTagStore } from '../hooks/useTagStore'
 import { PDFRegion } from '../lib/types'
 import { TagBadge } from './TagBadge'
 
 export function TreeEditor() {
-  const { document, selectedRegionIds, selectRegion, groupSelectedRegions, unparentSelected, moveRegion, updateRegion, reorderRegion } = useTagStore()
+  const { document, selectedRegionIds, selectRegion, groupSelectedRegions, unparentSelected, moveRegion, removeRegion, updateRegion, reorderRegion } = useTagStore()
   const [dropTarget, setDropTarget] = useState<{ id: string; position: 'before' | 'after' | 'inside' } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null)
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Dismiss context menu on outside click
+  useEffect(() => {
+    if (!contextMenu) return
+    const dismiss = () => setContextMenu(null)
+    window.addEventListener('mousedown', dismiss)
+    return () => window.removeEventListener('mousedown', dismiss)
+  }, [contextMenu])
 
   if (!document) return null
 
@@ -40,7 +50,23 @@ export function TreeEditor() {
       <div key={region.id} className="flex flex-col">
         <div
           draggable
+          onMouseDown={(e) => {
+            longPressTimer.current = setTimeout(() => {
+              setContextMenu({ id: region.id, x: e.clientX, y: e.clientY })
+            }, 500)
+          }}
+          onMouseUp={() => { if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null } }}
+          onMouseLeave={() => { if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null } }}
+          onTouchStart={(e) => {
+            const touch = e.touches[0]
+            longPressTimer.current = setTimeout(() => {
+              setContextMenu({ id: region.id, x: touch.clientX, y: touch.clientY })
+            }, 500)
+          }}
+          onTouchEnd={() => { if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null } }}
+          onTouchMove={() => { if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null } }}
           onDragStart={(e) => {
+            if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null }
             e.dataTransfer.setData('text/plain', region.id)
             e.dataTransfer.effectAllowed = 'move'
           }}
@@ -211,6 +237,31 @@ export function TreeEditor() {
           </div>
         )}
       </div>
+
+      {contextMenu && (() => {
+        const region = allRegions.find(r => r.id === contextMenu.id)
+        if (!region) return null
+        return (
+          <div
+            className="fixed z-50 bg-white border border-gray-200 rounded-md shadow-lg py-1 min-w-[140px] text-sm"
+            style={{ top: contextMenu.y, left: contextMenu.x }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="px-3 py-1 text-xs text-gray-400 font-medium border-b border-gray-100 mb-1 truncate max-w-[160px]">
+              {region.ocrText ? region.ocrText.substring(0, 24) : (region.altText || 'Region')}
+            </div>
+            <button
+              className="w-full text-left px-3 py-1.5 hover:bg-red-50 text-red-600"
+              onClick={() => {
+                removeRegion(contextMenu.id)
+                setContextMenu(null)
+              }}
+            >
+              Remove region
+            </button>
+          </div>
+        )
+      })()}
     </div>
   )
 }

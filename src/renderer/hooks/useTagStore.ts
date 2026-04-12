@@ -31,6 +31,7 @@ interface TagStore {
   getPageRegions: (pageNumber: number) => PDFRegion[]
   groupSelectedRegions: (tag: string, name?: string) => void
   unparentSelected: () => void
+  removeRegion: (regionId: string) => void
   moveRegion: (regionId: string, newParentId: string | null) => void
   reorderRegion: (draggedId: string, targetId: string, position: 'before' | 'after' | 'inside') => void
   setOcrProgress: (progress: number) => void
@@ -228,11 +229,19 @@ export const useTagStore = create<TagStore>((set, get) => ({
     const firstSelectedRegion = allRegions.find(r => r.id === firstSelectedId)
     const targetPageNum = firstSelectedRegion?.pageNumber || 1
 
+    const selectedOnPage = allRegions.filter(r => selectedRegionIds.includes(r.id) && r.pageNumber === targetPageNum)
+    const unionBbox = selectedOnPage.length > 0 ? {
+      x: Math.min(...selectedOnPage.map(r => r.bbox.x)),
+      y: Math.min(...selectedOnPage.map(r => r.bbox.y)),
+      width: Math.max(...selectedOnPage.map(r => r.bbox.x + r.bbox.width)) - Math.min(...selectedOnPage.map(r => r.bbox.x)),
+      height: Math.max(...selectedOnPage.map(r => r.bbox.y + r.bbox.height)) - Math.min(...selectedOnPage.map(r => r.bbox.y))
+    } : { x: 0, y: 0, width: 0, height: 0 }
+
     const groupId = `group-${Date.now()}`
     const groupRegion: PDFRegion = {
       id: groupId,
       pageNumber: targetPageNum,
-      bbox: { x: 0, y: 0, width: 0, height: 0 },
+      bbox: unionBbox,
       type: 'group',
       tag: tag,
       altText: name, // reuse altText as the custom group name
@@ -275,6 +284,27 @@ export const useTagStore = create<TagStore>((set, get) => ({
           )
         }))
       }
+    })
+  },
+
+  removeRegion: (regionId) => {
+    const doc = get().document
+    if (!doc) return
+
+    get().saveHistory()
+
+    set({
+      document: {
+        ...doc,
+        pages: doc.pages.map(page => ({
+          ...page,
+          // Remove the region and unparent any children that referenced it
+          regions: page.regions
+            .filter(r => r.id !== regionId)
+            .map(r => r.parentId === regionId ? { ...r, parentId: undefined } : r)
+        }))
+      },
+      selectedRegionIds: get().selectedRegionIds.filter(id => id !== regionId)
     })
   },
 
