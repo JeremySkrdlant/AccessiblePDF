@@ -2,12 +2,14 @@ import { useState, useRef, useEffect } from 'react'
 import { useTagStore } from '../hooks/useTagStore'
 import { PDFRegion } from '../lib/types'
 import { TagBadge } from './TagBadge'
+import { compareReadingOrder } from '../lib/readingOrder'
 
 export function TreeEditor() {
-  const { document, selectedRegionIds, selectRegion, groupSelectedRegions, unparentSelected, moveRegion, removeRegion, updateRegion, reorderRegion } = useTagStore()
+  const { document, selectedRegionIds, selectRegion, setSelectedRegionIds, groupSelectedRegions, unparentSelected, moveRegion, removeRegion, updateRegion, reorderRegion, toolMode, setToolMode } = useTagStore()
   const [dropTarget, setDropTarget] = useState<{ id: string; position: 'before' | 'after' | 'inside' } | null>(null)
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const anchorIdRef = useRef<string | null>(null)
 
   // Dismiss context menu on outside click
   useEffect(() => {
@@ -27,16 +29,22 @@ export function TreeEditor() {
 
   // Utility to find children
   const getChildren = (parentId: string) => {
-    // preserve explicit readingOrder or page order
     return allRegions
       .filter(r => r.parentId === parentId)
-      .sort((a, b) => {
-        if (a.readingOrder !== undefined && b.readingOrder !== undefined) return a.readingOrder - b.readingOrder
-        if (a.readingOrder !== undefined) return -1
-        if (b.readingOrder !== undefined) return 1
-        if (a.pageNumber !== b.pageNumber) return a.pageNumber - b.pageNumber
-        return a.bbox.y - b.bbox.y || a.bbox.x - b.bbox.x
-      })
+      .sort(compareReadingOrder)
+  }
+
+  // Flat list of visible nodes in display order (depth-first, collapsed nodes skip children)
+  const getFlatVisibleNodes = (): PDFRegion[] => {
+    const result: PDFRegion[] = []
+    function visit(region: PDFRegion) {
+      result.push(region)
+      if (region.isExpanded ?? true) {
+        getChildren(region.id).forEach(visit)
+      }
+    }
+    rootRegions.sort(compareReadingOrder).forEach(visit)
+    return result
   }
 
   const renderNode = (region: PDFRegion, depth: number) => {
@@ -118,15 +126,24 @@ export function TreeEditor() {
               : undefined
           }}
           onClick={(e) => {
-            if (e.metaKey || e.ctrlKey) {
-              const { setSelectedRegionIds } = useTagStore.getState()
+            if (e.shiftKey && anchorIdRef.current) {
+              const flat = getFlatVisibleNodes()
+              const anchorIdx = flat.findIndex(r => r.id === anchorIdRef.current)
+              const clickIdx = flat.findIndex(r => r.id === region.id)
+              if (anchorIdx !== -1 && clickIdx !== -1) {
+                const [from, to] = anchorIdx <= clickIdx ? [anchorIdx, clickIdx] : [clickIdx, anchorIdx]
+                setSelectedRegionIds(flat.slice(from, to + 1).map(r => r.id))
+              }
+            } else if (e.metaKey || e.ctrlKey) {
               if (isSelected) {
                 setSelectedRegionIds(selectedRegionIds.filter(id => id !== region.id))
               } else {
                 setSelectedRegionIds([...selectedRegionIds, region.id])
+                anchorIdRef.current = region.id
               }
             } else {
               selectRegion(region.id)
+              anchorIdRef.current = region.id
             }
           }}
         >
@@ -185,6 +202,20 @@ export function TreeEditor() {
     <div className="w-80 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col overflow-y-hidden">
       <div className="p-3 border-b border-gray-100 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-gray-700">Document Structure</h2>
+        <button
+          onClick={() => setToolMode(toolMode === 'draw-text' ? 'select' : 'draw-text')}
+          title={toolMode === 'draw-text' ? 'Exit draw text mode (Esc)' : 'Add text region'}
+          className={`p-1 rounded transition-colors ${
+            toolMode === 'draw-text'
+              ? 'bg-blue-600 text-white hover:bg-blue-700'
+              : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 16 16" stroke="currentColor" strokeWidth={1.5}>
+            <rect x="2" y="2" width="12" height="12" rx="1" strokeDasharray="3 2" />
+            <text x="8" y="11" textAnchor="middle" fontSize="7" stroke="none" fill="currentColor" fontWeight="bold">T</text>
+          </svg>
+        </button>
       </div>
 
       <div className="p-2 border-b border-gray-100 bg-gray-50 flex flex-wrap gap-2 text-xs">
@@ -226,13 +257,7 @@ export function TreeEditor() {
         ) : (
           <div className="flex flex-col">
             {rootRegions
-              .sort((a, b) => {
-                if (a.readingOrder !== undefined && b.readingOrder !== undefined) return a.readingOrder - b.readingOrder
-                if (a.readingOrder !== undefined) return -1
-                if (b.readingOrder !== undefined) return 1
-                if (a.pageNumber !== b.pageNumber) return a.pageNumber - b.pageNumber
-                return a.bbox.y - b.bbox.y || a.bbox.x - b.bbox.x
-              })
+              .sort(compareReadingOrder)
               .map(node => renderNode(node, 0))}
           </div>
         )}

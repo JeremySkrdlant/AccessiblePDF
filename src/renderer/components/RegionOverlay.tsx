@@ -76,7 +76,7 @@ function computeResizedBbox(
 export function RegionOverlay({
   regions, canvasWidth, canvasHeight, selectedRegionIds, pageNum
 }: RegionOverlayProps) {
-  const { selectRegion, setSelectedRegionIds, updateRegion, addRegion, toolMode, setToolMode, mergeSelectedRegions } = useTagStore()
+  const { selectRegion, setSelectedRegionIds, updateRegion, addRegion, removeRegion, toolMode, setToolMode, mergeSelectedRegions } = useTagStore()
   const overlayRef = useRef<HTMLDivElement>(null)
   const dragStartRef = useRef<{ x: number; y: number } | null>(null)
   const [dragRect, setDragRect] = useState<DragRect | null>(null)
@@ -96,13 +96,21 @@ export function RegionOverlay({
     function onKeyDown(e: KeyboardEvent) {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
       if (e.key === 'Escape') {
-        if (toolMode === 'draw') { setToolMode('select'); return }
+        if (toolMode === 'draw' || toolMode === 'draw-text') { setToolMode('select'); return }
         selectRegion(null)
         return
       }
       if (e.key === ' ') {
         e.preventDefault()
         mergeSelectedRegions()
+        return
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedRegionIds.length === 0) return
+        const label = selectedRegionIds.length === 1 ? 'this region' : `these ${selectedRegionIds.length} regions`
+        if (window.confirm(`Delete ${label}? This cannot be undone.`)) {
+          for (const id of [...selectedRegionIds]) removeRegion(id)
+        }
         return
       }
       const role = KEY_TO_TAG[e.key.toLowerCase()]
@@ -158,24 +166,34 @@ export function RegionOverlay({
       return
     }
 
-    const start = dragStartRef.current
     dragStartRef.current = null
 
     if (dragRect && (dragRect.width > 8 || dragRect.height > 8)) {
-      if (toolMode === 'draw') {
+      if (toolMode === 'draw' || toolMode === 'draw-text') {
         const bbox = {
           x: dragRect.x / canvasWidth,
           y: dragRect.y / canvasHeight,
           width: dragRect.width / canvasWidth,
           height: dragRect.height / canvasHeight
         }
-        addRegion({
-          id: `page-${pageNum}-drawn-${Date.now()}`,
-          pageNumber: pageNum,
-          bbox,
-          type: 'image',
-          tag: 'Figure'
-        })
+        if (toolMode === 'draw') {
+          addRegion({
+            id: `page-${pageNum}-drawn-${Date.now()}`,
+            pageNumber: pageNum,
+            bbox,
+            type: 'image',
+            tag: 'Figure'
+          })
+        } else {
+          addRegion({
+            id: `page-${pageNum}-drawn-${Date.now()}`,
+            pageNumber: pageNum,
+            bbox,
+            type: 'text',
+            tag: null,
+            ocrText: ''
+          })
+        }
       } else {
         // Rubber-band select
         const hit = regions
@@ -192,7 +210,7 @@ export function RegionOverlay({
 
   function onRegionClick(e: React.MouseEvent, id: string) {
     e.stopPropagation()
-    if (toolMode === 'draw') return
+    if (toolMode === 'draw' || toolMode === 'draw-text') return
     if (e.metaKey || e.ctrlKey) {
       setSelectedRegionIds(
         selectedRegionIds.includes(id)
@@ -213,7 +231,7 @@ export function RegionOverlay({
 
   const cursor = resizeBbox
     ? (HANDLE_CURSORS[resizeRef.current?.handle ?? 'se'])
-    : toolMode === 'draw' ? 'cursor-crosshair' : 'cursor-default'
+    : (toolMode === 'draw' || toolMode === 'draw-text') ? 'cursor-crosshair' : 'cursor-default'
 
   return (
     <div
@@ -239,7 +257,7 @@ export function RegionOverlay({
             key={region.id}
             className={`
               absolute transition-all duration-100 select-none
-              ${toolMode === 'draw' ? 'pointer-events-none' : 'cursor-pointer'}
+              ${(toolMode === 'draw' || toolMode === 'draw-text') ? 'pointer-events-none' : 'cursor-pointer'}
               ${isSelected
                 ? `border-2 z-20 ${isImage ? 'border-green-500 bg-green-500/10' : 'border-blue-500 bg-blue-500/10'}`
                 : hasTag
@@ -278,7 +296,9 @@ export function RegionOverlay({
           className={`absolute pointer-events-none z-30 ${
             toolMode === 'draw'
               ? 'border-2 border-green-500 bg-green-500/10'
-              : 'border-2 border-blue-400 bg-blue-400/10'
+              : toolMode === 'draw-text'
+                ? 'border-2 border-blue-500 bg-blue-500/10'
+                : 'border-2 border-blue-400 bg-blue-400/10'
           }`}
           style={{ left: dragRect.x, top: dragRect.y, width: dragRect.width, height: dragRect.height }}
         />

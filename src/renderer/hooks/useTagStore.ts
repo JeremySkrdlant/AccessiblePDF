@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { PDFDocumentMeta, PDFRegion, BoundingBox } from '../lib/types'
+import { compareReadingOrder } from '../lib/readingOrder'
 
 interface HistoryState {
   document: PDFDocumentMeta
@@ -14,7 +15,7 @@ interface TagStore {
   isOcrRunning: boolean
   docTitle: string
   docLanguage: string
-  toolMode: 'select' | 'draw'
+  toolMode: 'select' | 'draw' | 'draw-text'
 
   history: HistoryState[]
   future: HistoryState[]
@@ -22,7 +23,7 @@ interface TagStore {
   setDocument: (doc: PDFDocumentMeta, rawBytes: ArrayBuffer) => void
   setDocTitle: (title: string) => void
   setDocLanguage: (lang: string) => void
-  setToolMode: (mode: 'select' | 'draw') => void
+  setToolMode: (mode: 'select' | 'draw' | 'draw-text') => void
   addRegion: (region: PDFRegion) => void
   updateRegion: (regionId: string, updates: Partial<PDFRegion>) => void
   selectRegion: (id: string | null) => void
@@ -347,12 +348,7 @@ export const useTagStore = create<TagStore>((set, get) => ({
     // Construct siblings without dragged item, maintaining existing sort order
     let siblings = allRegions
       .filter(r => r.parentId === targetParentId && r.id !== draggedId)
-      .sort((a, b) => {
-        if (a.readingOrder !== undefined && b.readingOrder !== undefined) return a.readingOrder - b.readingOrder
-        if (a.readingOrder !== undefined) return -1
-        if (b.readingOrder !== undefined) return 1
-        return a.pageNumber - b.pageNumber || a.bbox.y - b.bbox.y || a.bbox.x - b.bbox.x
-      })
+      .sort(compareReadingOrder)
 
     // Splice dragged into siblings array at correct index
     if (position === 'inside') {

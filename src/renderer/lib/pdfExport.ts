@@ -14,6 +14,7 @@ import {
   showText,
 } from 'pdf-lib'
 import type { PDFDocumentMeta, PDFRegion } from './types'
+import { compareReadingOrder } from './readingOrder'
 
 // ---------------------------------------------------------------------------
 // Tag role → PDF structure type mapping
@@ -219,17 +220,7 @@ export async function exportTaggedPDF(
   const allTaggedRegions: PDFRegion[] = appDoc.pages
     .flatMap((page) => page.regions)
     .filter((r) => r.tag !== null)
-    .sort((a, b) => {
-      // Respect explicit readingOrder if set
-      if (a.readingOrder !== undefined && b.readingOrder !== undefined) {
-        return a.readingOrder - b.readingOrder
-      }
-      if (a.readingOrder !== undefined) return -1
-      if (b.readingOrder !== undefined) return 1
-      // Default: page order, top-to-bottom, left-to-right
-      if (a.pageNumber !== b.pageNumber) return a.pageNumber - b.pageNumber
-      return a.bbox.y - b.bbox.y || a.bbox.x - b.bbox.x
-    })
+    .sort(compareReadingOrder)
 
   // ------------------------------------------------------------------
   // Step 4: Build logical structure nodes (handles List/ListItem nesting)
