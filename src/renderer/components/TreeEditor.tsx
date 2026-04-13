@@ -202,36 +202,45 @@ export function TreeEditor() {
     <div className="w-80 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col overflow-y-hidden">
       <div className="p-3 border-b border-gray-100 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-gray-700">Document Structure</h2>
-        <button
-          onClick={() => setToolMode(toolMode === 'draw-text' ? 'select' : 'draw-text')}
-          title={toolMode === 'draw-text' ? 'Exit draw text mode (Esc)' : 'Add text region'}
-          className={`p-1 rounded transition-colors ${
-            toolMode === 'draw-text'
-              ? 'bg-blue-600 text-white hover:bg-blue-700'
-              : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
-          }`}
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 16 16" stroke="currentColor" strokeWidth={1.5}>
-            <rect x="2" y="2" width="12" height="12" rx="1" strokeDasharray="3 2" />
-            <text x="8" y="11" textAnchor="middle" fontSize="7" stroke="none" fill="currentColor" fontWeight="bold">T</text>
-          </svg>
-        </button>
       </div>
 
       <div className="p-2 border-b border-gray-100 bg-gray-50 flex flex-wrap gap-2 text-xs">
+        <button
+          onClick={() => setToolMode(toolMode === 'draw' ? 'select' : 'draw')}
+          title={toolMode === 'draw' ? 'Exit draw mode (Esc)' : 'Draw image region'}
+          className={`px-2 py-1 border rounded shadow-sm flex items-center gap-1 ${
+            toolMode === 'draw'
+              ? 'bg-green-600 text-white border-green-600 hover:bg-green-700'
+              : 'bg-white border-gray-300 hover:bg-gray-50'
+          }`}
+        >
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 16 16" stroke="currentColor" strokeWidth={1.5}>
+            <rect x="2" y="2" width="12" height="12" rx="1" strokeDasharray="3 2" />
+            <path d="M8 5v6M5 8h6" strokeLinecap="round" />
+          </svg>
+          {toolMode === 'draw' ? 'Drawing Image…' : 'Draw Image'}
+        </button>
+        <button
+          onClick={() => setToolMode(toolMode === 'draw-text' ? 'select' : 'draw-text')}
+          title={toolMode === 'draw-text' ? 'Exit draw text mode (Esc)' : 'Add text region'}
+          className={`px-2 py-1 border rounded shadow-sm flex items-center gap-1 ${
+            toolMode === 'draw-text'
+              ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
+              : 'bg-white border-gray-300 hover:bg-gray-50'
+          }`}
+        >
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 16 16" stroke="currentColor" strokeWidth={1.5}>
+            <rect x="2" y="2" width="12" height="12" rx="1" strokeDasharray="3 2" />
+            <text x="8" y="11" textAnchor="middle" fontSize="7" stroke="none" fill="currentColor" fontWeight="bold">T</text>
+          </svg>
+          {toolMode === 'draw-text' ? 'Drawing Text…' : 'Draw Text'}
+        </button>
         <button
           disabled={selectedRegionIds.length === 0}
           onClick={() => groupSelectedRegions('List')}
           className="px-2 py-1 bg-white border border-gray-300 rounded shadow-sm disabled:opacity-50 hover:bg-gray-50"
         >
           Group into List
-        </button>
-        <button
-          disabled={selectedRegionIds.length === 0}
-          onClick={() => groupSelectedRegions('Column')}
-          className="px-2 py-1 bg-white border border-gray-300 rounded shadow-sm disabled:opacity-50 hover:bg-gray-50"
-        >
-          Group into Column
         </button>
       </div>
 

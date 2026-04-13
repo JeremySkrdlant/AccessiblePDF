@@ -11,7 +11,6 @@ export function App() {
   const {
     document, rawPdfBytes, isOcrRunning, ocrProgress,
     docTitle, docLanguage, setDocTitle, setDocLanguage,
-    toolMode, setToolMode,
     setDocument, reset, undo, redo,
     history, future
   } = useTagStore()
@@ -106,23 +105,6 @@ export function App() {
             </button>
           </div>
 
-          <button
-            onClick={() => setToolMode(toolMode === 'draw' ? 'select' : 'draw')}
-            title={toolMode === 'draw' ? 'Exit draw mode (Esc)' : 'Draw image region'}
-            className={`
-              flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
-              ${toolMode === 'draw'
-                ? 'bg-green-600 text-white hover:bg-green-700'
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }
-            `}
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 16 16" stroke="currentColor" strokeWidth={1.5}>
-              <rect x="2" y="2" width="12" height="12" rx="1" strokeDasharray="3 2" />
-              <path d="M8 5v6M5 8h6" strokeLinecap="round" />
-            </svg>
-            {toolMode === 'draw' ? 'Drawing Image…' : 'Draw Image'}
-          </button>
           <ExportButton />
         </div>
       </header>
