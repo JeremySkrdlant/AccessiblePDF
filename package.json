@@ -1,5 +1,6 @@
 {
   "name": "pdf-accessibility-tagger",
+  "author": {"name": "Jeremy Skrdlant", "email": "jeremy.skrdlant@fhnw.edu","url": "https://jeremyskrdlant.rocks/"},
   "version": "0.1.0",
   "description": "Tag PDFs for genuine screen reader accessibility",
   "main": "out/main/index.js",
@@ -11,9 +12,6 @@
     "dist:win": "npm run build && electron-builder --win",
     "typecheck": "tsc --noEmit",
     "preview": "electron-vite preview"
-  },
-  "build": {
-    "config": "electron-builder.yml"
   },
   "dependencies": {
     "pdfjs-dist": "4.4.168",
