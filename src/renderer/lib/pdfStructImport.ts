@@ -9,39 +9,310 @@ function fromStructType(s: string): TagRole {
     H1: 'H1', H2: 'H2', H3: 'H3', H4: 'H4', H5: 'H5', H6: 'H6',
     P: 'P', Figure: 'Figure', Caption: 'Caption',
     Table: 'Table', L: 'List', LI: 'ListItem',
+    // Variations PDF.js or other tools may use:
+    Lbl: null, LBody: null, Sect: null, Div: null,
+    Document: null, Art: null, Part: null, BlockQuote: null,
+    TR: null, TD: null, TH: null,
   }
-  return map[s] ?? null
+  return (s in map) ? map[s] : null
+}
+
+// Roles that become leaf regions (aggregate all content beneath them)
+const LEAF_ROLES = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'Caption', 'LI', 'Table', 'Figure'])
+
+// Roles that become group/container regions
+const CONTAINER_ROLES = new Set(['L'])
+
+// ---------------------------------------------------------------------------
+// Internal types
+// ---------------------------------------------------------------------------
+interface RawBbox { x1: number; y1: number; x2: number; y2: number }
+
+/** What we store per MCID from the text content stream */
+interface ContentEntry {
+  bbox: RawBbox | null
+  texts: string[]
+  /** The BDC tag (e.g. "H1", "P", "LI") — ground truth for the struct type */
+  bdcTag: string
+  pageIdx: number
+}
+
+interface PageDim { width: number; height: number }
+
+function unionRawBbox(a: RawBbox, b: RawBbox): RawBbox {
+  return {
+    x1: Math.min(a.x1, b.x1),
+    y1: Math.min(a.y1, b.y1),
+    x2: Math.max(a.x2, b.x2),
+    y2: Math.max(a.y2, b.y2),
+  }
+}
+
+function normalizeBbox(raw: RawBbox, pageW: number, pageH: number) {
+  const x = raw.x1 / pageW
+  const y = 1 - raw.y2 / pageH          // flip y: PDF origin is bottom-left
+  const w = (raw.x2 - raw.x1) / pageW
+  const h = (raw.y2 - raw.y1) / pageH
+  return {
+    x: Math.max(0, Math.min(0.999, x)),
+    y: Math.max(0, Math.min(0.999, y)),
+    width: Math.max(0.005, Math.min(1, w)),
+    height: Math.max(0.005, Math.min(1, h)),
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Walk the PDF.js struct tree and build a map:
-//   "p{pageIdx}_mc{mcid}" → { role, altText }
+// Phase 1: build the MCID → content map from the text stream
+// Key: "p{pageIdx}_mc{mcid}"
+// Stores bbox, text, AND the BDC tag (reliable ground truth for struct type)
 // ---------------------------------------------------------------------------
-interface StructInfo { role: string; altText?: string }
+async function buildContentMap(
+  pdfDoc: PDFDocumentProxy,
+  pageCount: number,
+  dims: Map<number, PageDim>,
+  onProgress?: (fraction: number) => void
+): Promise<Map<string, ContentEntry>> {
+  const contentMap = new Map<string, ContentEntry>()
 
-function extractStructInfo(node: unknown, parentRole: string): Map<string, StructInfo> {
-  const result = new Map<string, StructInfo>()
+  for (let pageIdx = 0; pageIdx < pageCount; pageIdx++) {
+    const pageNum = pageIdx + 1
+    const page = await pdfDoc.getPage(pageNum)
+    const vp = page.getViewport({ scale: 1 })
+    dims.set(pageIdx, { width: vp.width, height: vp.height })
 
-  function walk(n: unknown, role: string) {
-    if (!n || typeof n !== 'object') return
-    const obj = n as Record<string, unknown>
+    try {
+      const tc = await page.getTextContent(
+        { includeMarkedContent: true } as Parameters<typeof page.getTextContent>[0]
+      )
 
-    const nodeRole = (typeof obj.role === 'string' ? obj.role : null) ?? role
-    const altText = typeof obj.alt === 'string' ? obj.alt : undefined
+      let activeId: string | null = null
+      let activeEntry: ContentEntry | null = null
 
-    // Leaf content node — id looks like "p0_mc3"
-    if (obj.type === 'content' && typeof obj.id === 'string') {
-      result.set(obj.id, { role, altText })
-      return
-    }
+      const flush = () => {
+        if (activeId !== null && activeEntry) {
+          contentMap.set(activeId, activeEntry)
+        }
+        activeId = null
+        activeEntry = null
+      }
 
-    if (Array.isArray(obj.children)) {
-      for (const child of obj.children) walk(child, nodeRole)
-    }
+      for (const item of tc.items) {
+        if (!item || typeof item !== 'object') continue
+        const obj = item as Record<string, unknown>
+
+        if (obj.type === 'beginMarkedContent' || obj.type === 'beginMarkedContentProps') {
+          flush()
+          // id looks like "MC3" or "p1R_mc3"
+          if (typeof obj.id === 'string') {
+            const m = obj.id.match(/MC(\d+)/i)
+            if (m) {
+              activeId = obj.id
+              // Store the BDC tag ("H1", "P", "LI", etc.) as ground truth
+              activeEntry = {
+                bbox: null,
+                texts: [],
+                bdcTag: typeof obj.tag === 'string' ? obj.tag : '',
+                pageIdx: pageIdx
+              }
+            }
+          }
+        } else if (obj.type === 'endMarkedContent') {
+          flush()
+        } else if (activeEntry && typeof obj.str === 'string' && obj.str.trim()) {
+          activeEntry.texts.push(obj.str)
+          const transform = obj.transform as number[] | undefined
+          if (transform && transform.length >= 6) {
+            const tx = transform[4]
+            const ty = transform[5]
+            const tw = typeof obj.width === 'number' ? obj.width : 0
+            const th = typeof obj.height === 'number' ? obj.height : 0
+            const nb: RawBbox = { x1: tx, y1: ty, x2: tx + tw, y2: ty + Math.max(th, 2) }
+            activeEntry.bbox = activeEntry.bbox ? unionRawBbox(activeEntry.bbox, nb) : nb
+          }
+        }
+      }
+      flush()
+    } catch { /* non-fatal */ }
+
+    page.cleanup()
+    onProgress?.((pageIdx + 1) / pageCount)
   }
 
-  walk(node, parentRole)
-  return result
+  return contentMap
+}
+
+// ---------------------------------------------------------------------------
+// Flat fallback: build regions directly from contentMap (no hierarchy)
+// Used when getStructTree() fails or yields nothing useful.
+// ---------------------------------------------------------------------------
+function buildFlatRegions(
+  contentMap: Map<string, ContentEntry>,
+  dims: Map<number, PageDim>,
+  pageCount: number
+): PDFRegion[] {
+  let counter = 0
+  const regions: PDFRegion[] = []
+
+  for (const [key, entry] of contentMap) {
+    if (!entry.bbox) continue
+    const pageIdx = entry.pageIdx
+    if (pageIdx >= pageCount) continue
+
+    const appTag = fromStructType(entry.bdcTag)
+    if (!appTag) continue  // skip Artifact, unknown, etc.
+
+    const dim = dims.get(pageIdx)
+    if (!dim) continue
+
+    regions.push({
+      id: `imported-flat-${++counter}`,
+      pageNumber: pageIdx + 1,
+      bbox: normalizeBbox(entry.bbox, dim.width, dim.height),
+      type: appTag === 'Figure' ? 'image' : 'text',
+      ocrText: entry.texts.join(' ') || undefined,
+      tag: appTag,
+    })
+  }
+
+  return regions
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2+3: walk the struct tree and emit hierarchical PDFRegion objects
+// Uses contentMap for bboxes + bdcTag (ground truth for tag name).
+// ---------------------------------------------------------------------------
+
+interface ContentLeaf { pageIdx: number; bbox: RawBbox | null; text: string; bdcTag: string }
+
+/** Recursively collect all content leaf entries under a struct node */
+function collectContentLeaves(
+  node: unknown,
+  contentMap: Map<string, ContentEntry>
+): ContentLeaf[] {
+  if (!node || typeof node !== 'object') return []
+  const obj = node as Record<string, unknown>
+
+  if ((obj.type === 'content' || obj.type === 'annot') && typeof obj.id === 'string') {
+    const entry = contentMap.get(obj.id)
+    if (!entry) return []
+    return [{
+      pageIdx: entry.pageIdx,
+      bbox: entry.bbox ?? null,
+      text: entry.texts.join(' ') ?? '',
+      bdcTag: entry.bdcTag ?? '',
+    }]
+  }
+
+  if (Array.isArray(obj.children)) {
+    return (obj.children as unknown[]).flatMap(c => collectContentLeaves(c, contentMap))
+  }
+  return []
+}
+
+let _idCounter = 0
+function nextId(prefix: string) { return `${prefix}-${++_idCounter}` }
+
+function walkStructNode(
+  node: unknown,
+  parentId: string | undefined,
+  contentMap: Map<string, ContentEntry>,
+  dims: Map<number, PageDim>,
+  allRegions: PDFRegion[]
+): void {
+  if (!node || typeof node !== 'object') return
+  const obj = node as Record<string, unknown>
+
+  if (obj.type === 'content' || obj.type === 'annot') return
+
+  const role = typeof obj.role === 'string' ? obj.role : ''
+  const children = Array.isArray(obj.children) ? (obj.children as unknown[]) : []
+
+  if (LEAF_ROLES.has(role)) {
+    // Aggregate all content under this struct element into one region
+    const leaves = children.flatMap(c => collectContentLeaves(c, contentMap))
+    if (leaves.length === 0) return
+
+    const pageIdx = leaves[0].pageIdx
+    const dim = dims.get(pageIdx)
+    if (!dim) return
+
+    let raw: RawBbox | null = null
+    let text = ''
+    // Collect the bdcTag from content items — use the first non-empty one
+    // as ground truth, falling back to the struct tree role
+    let bdcTag = ''
+    for (const leaf of leaves) {
+      if (leaf.pageIdx === pageIdx && leaf.bbox) {
+        raw = raw ? unionRawBbox(raw, leaf.bbox) : { ...leaf.bbox }
+      }
+      if (leaf.text) text += (text ? ' ' : '') + leaf.text
+      if (!bdcTag && leaf.bdcTag) bdcTag = leaf.bdcTag
+    }
+
+    if (!raw) return
+
+    // Prefer the BDC tag (ground truth from content stream) over struct tree role
+    const tagSource = bdcTag || role
+    const appTag = fromStructType(tagSource) ?? fromStructType(role)
+    if (!appTag) return
+
+    const altText = typeof (obj as Record<string, unknown>).alt === 'string'
+      ? (obj as Record<string, unknown>).alt as string
+      : undefined
+
+    allRegions.push({
+      id: nextId('imported'),
+      pageNumber: pageIdx + 1,
+      bbox: normalizeBbox(raw, dim.width, dim.height),
+      type: appTag === 'Figure' ? 'image' : 'text',
+      ocrText: text || undefined,
+      altText,
+      tag: appTag,
+      parentId,
+    })
+
+  } else if (CONTAINER_ROLES.has(role)) {
+    // Create a group region; children get this group as parentId
+    const groupId = nextId('imported-group')
+    const regsBefore = allRegions.length
+
+    for (const child of children) {
+      walkStructNode(child, groupId, contentMap, dims, allRegions)
+    }
+
+    const childRegions = allRegions.slice(regsBefore)
+    if (childRegions.length === 0) return
+
+    const pageNum = childRegions[0].pageNumber
+    let gx = childRegions[0].bbox.x
+    let gy = childRegions[0].bbox.y
+    let gx2 = gx + childRegions[0].bbox.width
+    let gy2 = gy + childRegions[0].bbox.height
+
+    for (const cr of childRegions.slice(1)) {
+      if (cr.pageNumber !== pageNum) continue
+      gx = Math.min(gx, cr.bbox.x)
+      gy = Math.min(gy, cr.bbox.y)
+      gx2 = Math.max(gx2, cr.bbox.x + cr.bbox.width)
+      gy2 = Math.max(gy2, cr.bbox.y + cr.bbox.height)
+    }
+
+    allRegions.push({
+      id: groupId,
+      pageNumber: pageNum,
+      bbox: { x: gx, y: gy, width: gx2 - gx, height: gy2 - gy },
+      type: 'group',
+      tag: fromStructType(role),
+      parentId,
+      isExpanded: true,
+    })
+
+  } else {
+    // Passthrough: no region created, children get the same parentId
+    for (const child of children) {
+      walkStructNode(child, parentId, contentMap, dims, allRegions)
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -61,151 +332,66 @@ export async function importStructuredPDF(
   }
   if (!markInfo?.Marked) return null
 
-  const pages: PDFPage[] = []
+  _idCounter = 0
 
-  for (let pageIdx = 0; pageIdx < pageCount; pageIdx++) {
-    const pageNum = pageIdx + 1
-    const page = await pdfDoc.getPage(pageNum)
-    const viewport = page.getViewport({ scale: 1 })
-    const pageW = viewport.width
-    const pageH = viewport.height
+  // ── Phase 1: build MCID → bbox/text/bdcTag map ────────────────────────────
+  const dims = new Map<number, PageDim>()
+  const contentMap = await buildContentMap(pdfDoc, pageCount, dims,
+    (f) => onProgress?.(f * 0.6)
+  )
+  onProgress?.(0.6)
 
-    // Build MCID → struct info from the page's structure tree
-    let mcidInfoMap = new Map<string, StructInfo>()
-    try {
-      const tree = await page.getStructTree()
-      if (tree) mcidInfoMap = extractStructInfo(tree, 'P')
-    } catch { /* non-fatal */ }
+  // ── Phase 2: attempt struct-tree-based hierarchical import ────────────────
+  // PDF.js page.getStructTree() returns the full document structure tree
+  // annotated with page-indexed content IDs (e.g. "p0_mc3").
+  let allRegions: PDFRegion[] = []
 
-    // Get text content with marked content boundaries
-    let textItems: unknown[] = []
-    try {
-      // includeMarkedContent is available in PDF.js 4.x
-      const tc = await page.getTextContent({ includeMarkedContent: true } as Parameters<typeof page.getTextContent>[0])
-      textItems = tc.items
-    } catch {
-      try {
-        const tc = await page.getTextContent()
-        textItems = tc.items
-      } catch { /* ignore */ }
-    }
+  try {
+    const page1 = await pdfDoc.getPage(1)
+    const structTree = await page1.getStructTree()
 
-    // -----------------------------------------------------------------------
-    // Parse the flat list of items into regions by tracking BDC/EMC boundaries
-    // -----------------------------------------------------------------------
-    const regions: PDFRegion[] = []
+    if (structTree) {
+      const rootObj = structTree as Record<string, unknown>
+      const rootChildren = Array.isArray(rootObj.children)
+        ? (rootObj.children as unknown[])
+        : []
 
-    // Active marked-content tracking
-    let currentStructType: string | null = null
-    let currentPropKey: string | null = null   // e.g. "MC3"
-    let currentTexts: string[] = []
-    let currentBbox: { x1: number; y1: number; x2: number; y2: number } | null = null
-
-    function flush() {
-      const structType = currentStructType
-      const propKey = currentPropKey
-      const texts = currentTexts
-      const bbox = currentBbox
-
-      currentStructType = null
-      currentPropKey = null
-      currentTexts = []
-      currentBbox = null
-
-      if (!structType || structType === 'Artifact') return
-
-      const tag = fromStructType(structType)
-      if (!tag) return
-
-      // Look up alt text from struct tree (for Figure elements)
-      let altText: string | undefined
-      if (propKey) {
-        // Our export uses prop keys like "MC{n}" where n === MCID
-        const m = propKey.match(/MC(\d+)/i)
-        if (m) {
-          const mcid = parseInt(m[1])
-          const info = mcidInfoMap.get(`p${pageIdx}_mc${mcid}`)
-          altText = info?.altText
-        }
-      }
-
-      // We need at least a bbox to place the region
-      if (!bbox) return
-
-      // Convert PDF coordinate space (origin bottom-left) to normalised (origin top-left)
-      const x = bbox.x1 / pageW
-      const rawY = 1 - bbox.y2 / pageH
-      const w = (bbox.x2 - bbox.x1) / pageW
-      const h = (bbox.y2 - bbox.y1) / pageH
-
-      regions.push({
-        id: `page-${pageNum}-imported-${regions.length}`,
-        pageNumber: pageNum,
-        bbox: {
-          x: Math.max(0, Math.min(0.999, x)),
-          y: Math.max(0, Math.min(0.999, rawY)),
-          width: Math.max(0.005, Math.min(1, w)),
-          height: Math.max(0.005, Math.min(1, h)),
-        },
-        type: tag === 'Figure' ? 'image' : 'text',
-        ocrText: texts.length > 0 ? texts.join(' ') : undefined,
-        altText,
-        tag,
-      })
-    }
-
-    for (const item of textItems) {
-      if (!item || typeof item !== 'object') continue
-      const obj = item as Record<string, unknown>
-
-      if (obj.type === 'beginMarkedContent') {
-        // Starting a new marked content sequence — flush any open one first
-        if (currentStructType !== null) flush()
-        currentStructType = typeof obj.tag === 'string' ? obj.tag : null
-        currentPropKey = typeof obj.id === 'string' ? obj.id : null
-      } else if (obj.type === 'endMarkedContent') {
-        flush()
-      } else if (currentStructType && typeof obj.str === 'string' && obj.str.trim()) {
-        // Regular text item inside a tagged sequence
-        currentTexts.push(obj.str)
-
-        const transform = obj.transform as number[] | undefined
-        if (transform && transform.length >= 6) {
-          const tx = transform[4]
-          const ty = transform[5]
-          const tw = typeof obj.width === 'number' ? obj.width : 0
-          const th = typeof obj.height === 'number' ? obj.height : 0
-
-          const x1 = tx
-          const y1 = ty
-          const x2 = tx + tw
-          const y2 = ty + Math.max(th, 2) // ensure non-zero height
-
-          if (!currentBbox) {
-            currentBbox = { x1, y1, x2, y2 }
-          } else {
-            currentBbox.x1 = Math.min(currentBbox.x1, x1)
-            currentBbox.y1 = Math.min(currentBbox.y1, y1)
-            currentBbox.x2 = Math.max(currentBbox.x2, x2)
-            currentBbox.y2 = Math.max(currentBbox.y2, y2)
-          }
-        }
+      for (const child of rootChildren) {
+        walkStructNode(child, undefined, contentMap, dims, allRegions)
       }
     }
+  } catch { /* fall through to flat fallback */ }
 
-    // Flush any unclosed sequence
-    flush()
-
-    pages.push({ pageNumber: pageNum, width: pageW, height: pageH, regions })
-    page.cleanup()
-
-    onProgress?.((pageIdx + 1) / pageCount)
+  // ── Phase 3: flat fallback if struct tree produced nothing ────────────────
+  // This handles cases where getStructTree() fails or returns an empty tree.
+  // The flat regions use the BDC tags directly — reliable for our own exports.
+  if (allRegions.length === 0) {
+    allRegions = buildFlatRegions(contentMap, dims, pageCount)
   }
 
-  // If we found zero regions across all pages the struct tree wasn't useful —
-  // fall back to OCR so the user still gets something to work with.
-  const totalRegions = pages.reduce((sum, p) => sum + p.regions.length, 0)
-  if (totalRegions === 0) return null
+  if (allRegions.length === 0) return null
+
+  onProgress?.(1)
+
+  // ── Phase 4: partition regions into per-page arrays ───────────────────────
+  const pageRegionMap = new Map<number, PDFRegion[]>()
+  for (let p = 1; p <= pageCount; p++) pageRegionMap.set(p, [])
+
+  for (const region of allRegions) {
+    const pn = Math.min(Math.max(region.pageNumber, 1), pageCount)
+    pageRegionMap.get(pn)!.push(region)
+  }
+
+  const pages: PDFPage[] = []
+  for (let p = 1; p <= pageCount; p++) {
+    const dim = dims.get(p - 1)
+    pages.push({
+      pageNumber: p,
+      width: dim?.width ?? 612,
+      height: dim?.height ?? 792,
+      regions: pageRegionMap.get(p) ?? [],
+    })
+  }
 
   return pages
 }

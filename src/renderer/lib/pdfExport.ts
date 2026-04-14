@@ -145,9 +145,9 @@ function setFont(fontKey: string, size: number): PDFOperator {
 function setTextMatrix(a: number, b: number, c: number, d: number, e: number, f: number): PDFOperator {
   return op(PDFOperatorNames.SetTextMatrix, a, b, c, d, e, f)
 }
-// BDC with named properties dict: /StructType /PropName BDC
-function beginMarkedContentProps(structType: string, propName: string): PDFOperator {
-  return PDFOperator.of(PDFOperatorNames.BeginMarkedContentSequence, [PDFName.of(structType), PDFName.of(propName)] as never)
+// BDC with inline properties dict: /StructType << /MCID mcid >> BDC
+function beginMarkedContentInline(structType: string, mcid: number, context: any): PDFOperator {
+  return PDFOperator.of(PDFOperatorNames.BeginMarkedContentSequence, [PDFName.of(structType), context.obj({ MCID: mcid })] as never)
 }
 // BMC for artifacts (no properties dict)
 function beginMarkedContentArtifact(): PDFOperator {
@@ -232,6 +232,7 @@ export async function exportTaggedPDF(
   // ------------------------------------------------------------------
   const mcidMap = new Map<string, number>()  // regionId → MCID
   const pageMcidCounters = new Map<number, number>()
+  const GS_TRANS = 'GsTrans'
 
   function assignMcids(nodes: StructNode[]) {
     for (const node of nodes) {
@@ -287,6 +288,14 @@ export async function exportTaggedPDF(
     }
     fontDict.set(PDFName.of(FONT_KEY), font.ref)
 
+    // Add ExtGState for transparency
+    let extGStateDict = resources.lookupMaybe(PDFName.of('ExtGState'), PDFDict)
+    if (!extGStateDict) {
+      extGStateDict = context.obj({}) as PDFDict
+      resources.set(PDFName.of('ExtGState'), extGStateDict)
+    }
+    extGStateDict.set(PDFName.of(GS_TRANS), context.obj({ Type: 'ExtGState', ca: 0, CA: 0 }))
+
     // Add Properties dict for named MCID references
     let propsDict = resources.lookupMaybe(PDFName.of('Properties'), PDFDict)
     if (!propsDict) {
@@ -295,6 +304,7 @@ export async function exportTaggedPDF(
     }
 
     // Register a property entry for each MCID on this page
+    // (We also use inline dictionaries below, but it is safe to keep them in Properties)
     for (const region of regionsOnPage) {
       if (region.tag === 'Artifact') continue
       const mcid = mcidMap.get(region.id)
@@ -317,8 +327,8 @@ export async function exportTaggedPDF(
     // 2. Draw our invisible screen-reader tagging text!
     if (regionsOnPage.length > 0) {
       operators.push(pushGraphicsState())
+      operators.push(op('gs' as any, GS_TRANS)) // visually invisible but extracts fine!
       operators.push(beginText())
-      operators.push(setTextRenderingMode(3)) // invalid visual rendering mode 3
 
       for (const region of regionsOnPage) {
         if (region.tag === 'Artifact') {
@@ -330,10 +340,9 @@ export async function exportTaggedPDF(
         const mcid = mcidMap.get(region.id)
         if (mcid === undefined) continue
 
-        const propName = `MC${mcid}`
         const structType = toStructType(region.tag as string)
 
-        operators.push(beginMarkedContentProps(structType, propName))
+        operators.push(beginMarkedContentInline(structType, mcid, context))
 
         const pdfX = region.bbox.x * pageW
         const pdfY = pageH - (region.bbox.y + region.bbox.height) * pageH

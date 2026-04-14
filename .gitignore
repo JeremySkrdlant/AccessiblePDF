@@ -8,6 +8,7 @@ coverage/
 .vscode/
 *.suo
 *.ntvs*
+*.dmg
 
 # electron-vite build output
 out/
